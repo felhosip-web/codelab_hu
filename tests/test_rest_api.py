@@ -66,6 +66,15 @@ class TestRESTAPI(unittest.TestCase):
                 parsed = res_body
             return e.code, parsed
 
+    def test_status_endpoint(self):
+        headers = {"X-API-Key": self.read_key}
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["rest_api_version"], "1.0.0")
+        self.assertEqual(res["api_version"], "3.0.0")
+        self.assertEqual(res["version"], "3.5.0")
+
     def test_get_plugins_unauthorized(self):
         status, res = self._make_request("/api/v2/plugins")
         self.assertEqual(status, 403)

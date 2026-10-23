@@ -13,6 +13,9 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import urllib.parse
+from core.version import MAIN_VERSION
+
+REST_API_VERSION = "1.0.0"
 
 @dataclass
 class APIKey:
@@ -229,10 +232,13 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             if not self.check_permission(key_obj, "read"):
                 self.send_error_json("Nincs olvasási jog", 403)
                 return
+
+            api_ver = self.api_manager.config.current_version if self.api_manager else "3.0.0"
             self.send_json({
                 "status": "ok",
-                "version": "2.6.0",
-                "api_version": "2.0.0",
+                "version": str(MAIN_VERSION),
+                "api_version": api_ver,
+                "rest_api_version": REST_API_VERSION,
                 "rest_config": {
                     "enabled": self.rest_config.enabled,
                     "host": self.rest_config.host,
@@ -309,10 +315,12 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             if self.plugin_loader:
                 plugin = self.plugin_loader.get_plugin(plugin_id)
                 if not plugin:
-                    for p_id, p in self.plugin_loader.plugins.items():
+                    for p_id in list(self.plugin_loader.plugins.keys()):
                         if p_id == plugin_id or p_id.startswith(plugin_id) or plugin_id in p_id:
-                            plugin = p
-                            break
+                            p_cand = self.plugin_loader.get_plugin(p_id)
+                            if p_cand:
+                                plugin = p_cand
+                                break
             
             if not plugin:
                 self.send_error_json(f"Plugin nem található: {plugin_id}", 404)

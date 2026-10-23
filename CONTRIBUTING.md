@@ -36,7 +36,9 @@ class BFAPlugin(AlgorithmPluginBase):
 
 ## Verziózás
 
-- Fő program: `core/version.py` → `MAIN_VERSION`
+- Fő program: `core/version.py` → `MAIN_VERSION` (3.5.0)
+- API Manager: `core/api_manager.py` → `current_version` (3.0.0, feature flag érvényesítéssel)
+- REST API: `core/rest_api.py` → `REST_API_VERSION` (1.0.0)
 - Plugin API: `PLUGIN_API_VERSION` → breaking change esetén major
 - Plugin: saját `version`
 

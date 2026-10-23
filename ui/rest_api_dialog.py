@@ -156,7 +156,7 @@ class RESTAPIDialog(QDialog):
         docs_text.setReadOnly(True)
         docs_text.setStyleSheet("font-family: monospace; font-size: 11px; background: #2d2d3d; color: #f1f2f6;")
         docs_text.setText("""
-🔒 BIZTONSÁGOS REST API - VÉDELEM ILLETÉKTELEN HASZNÁLAT ELLEN
+🔒 BIZTONSÁGOS REST API v1.0.0 (API Manager v3.0.0) - VÉDELEM ILLETÉKTELEN HASZNÁLAT ELLEN
 
 Nyílt részek és védelmük:
 
@@ -164,6 +164,7 @@ Nyílt részek és védelmük:
    - Védve: IP whitelist, rate limit, API kulcs ha require_api_key=True
    - Jog: read
    - Alapból: csak localhost, kulcs kell
+   - Válasz tartalmazza: "api_version" (3.0.0), "rest_api_version" (1.0.0), "version" (app version)
 
 2. /api/v2/plugins (GET) - Plugin lista
    - Védve: IP, rate limit, API kulcs

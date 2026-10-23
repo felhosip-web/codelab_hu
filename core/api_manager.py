@@ -30,9 +30,9 @@ class APIVersion:
 
 @dataclass
 class APIConfig:
-    current_version: str = "2.0.0"
+    current_version: str = "3.0.0"
     min_supported_version: str = "1.0.0"
-    max_supported_version: str = "2.5.0"
+    max_supported_version: str = "3.0.0"
     
     # Teljesítmény finomhangolás
     enable_caching: bool = True
@@ -122,6 +122,7 @@ class APIManager:
             APIFeature("playback", True, "2.1.0", "Lejátszás vezérlő", False, "", "", "low", False),
             APIFeature("menu", True, "2.2.0", "Menü rendszer", False, "", "", "low", False),
             APIFeature("fourier", True, "1.0.0", "Fourier transzformációk", False, "", "", "medium", False),
+            APIFeature("general", True, "1.0.0", "Általános pluginok és funkciók", False, "", "", "low", False),
             # Kísérleti
             APIFeature("ai_assistant", False, "2.5.0", "AI asszisztens", False, "", "", "high", True),
             APIFeature("cloud_sync", False, "2.5.0", "Felhő szinkron", False, "", "", "high", True),
@@ -138,6 +139,7 @@ class APIManager:
             APIVersion("1.1.0", ["sorting", "search", "graph", "tree", "hash", "string", "dynamic_params"], [], "2024-02-01", ["1.0.0"]),
             APIVersion("2.0.0", ["sorting", "search", "graph", "tree", "hash", "string", "encoding", "dynamic_params", "state_manager", "engine", "performance_monitor"], ["old_array_viewer"], "2024-06-01", ["1.0.0", "1.1.0"]),
             APIVersion("2.5.0", list(self.features.keys()), [], "2024-12-01", ["1.0.0", "1.1.0", "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0"]),
+            APIVersion("3.0.0", list(self.features.keys()), ["feature_flags_enforced"], "2025-01-01", ["1.0.0", "1.1.0", "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"]),
         ]
         for ver in versions:
             self.versions[ver.version] = ver

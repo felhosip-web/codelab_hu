@@ -217,6 +217,7 @@ class MainWindow(QMainWindow):
         if self.current_plugin:
             self.on_language_changed("C++")
             self.update_plugin_info()
+        self.refresh_plugin_list()
 
     def update_plugin_info(self):
         if self.current_plugin:
@@ -281,6 +282,23 @@ class MainWindow(QMainWindow):
             self.current_plugin = None
             self.update_plugin_info()
             self.reset()
+
+        # Update UI features (playback, breakpoints)
+        playback_ok = self.api_manager.is_feature_enabled("playback") and self.api_manager.config.enable_animations
+        self.btn_play.setEnabled(playback_ok)
+        self.bottom_btn_play.setEnabled(playback_ok)
+        if not playback_ok and self.is_playing:
+            self.timer.stop()
+            self.is_playing = False
+            self.btn_play.setText(f"▶ {UI_TEXTS['play']}")
+            self.bottom_btn_play.setText("▶")
+
+        bp_ok = self.api_manager.is_feature_enabled("breakpoints") or self.api_manager.is_feature_enabled("advanced_breakpoints")
+        self.bottom_btn_breakpoint.setEnabled(bp_ok)
+        if not bp_ok:
+            self.bottom_btn_breakpoint.setToolTip("Breakpoint funkció kikapcsolva (API Manager)")
+        else:
+            self.bottom_btn_breakpoint.setToolTip("Töréspont ki/be kapcsolása")
 
     def toggle_play(self):
         if not self.api_manager.is_feature_enabled("playback") or not self.api_manager.config.enable_animations:

@@ -1,6 +1,6 @@
 # CodeLab HU
 
-![Version](https://img.shields.io/badge/version-3.4.0-blue.svg)
+![Version](https://img.shields.io/badge/version-3.5.0-blue.svg)
 ![License](https://img.shields.io/badge/license-GNU%20GPL%20v3-green.svg)
 ![Plugins](https://img.shields.io/badge/plugins-20-orange.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
@@ -37,7 +37,7 @@ python main.py
 - **Dinamikus paraméterezés**: Bemeneti adatok, tömbméretek és egyéb paraméterek finomhangolása.
 - **Breakpoint rendszer**: Feltételes és hit-count töréspontok támogatása.
 - **Állapotkezelés & Mentés**: Munkamenetek mentése, visszatöltése, undo/redo támogatás.
-- **REST API & API Kezelő**: Biztonságos API felület beépített engedélyezési és tesztelési lehetőségekkel.
+- **REST API (v1.0) & API Kezelő (v3.0)**: Biztonságos REST API felület beépített engedélyezési lehetőségekkel, valamint dinamikus API Manager 3.0 feature flag érvényesítéssel és hook csatlakozásokkal.
 - **Bővíthető Plugin-architektúra**: Ismert interfészre épülő, függetlenül tölthető modulok.
 
 ---

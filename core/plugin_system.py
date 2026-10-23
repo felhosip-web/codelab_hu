@@ -27,6 +27,87 @@ class AlgorithmPluginBase:
     def get_supported_languages(self) -> List[str]:
         return list(self.codes.keys()) if hasattr(self, 'codes') else []
 
+FEATURE_MAPPINGS: Dict[str, str] = {
+    # Sorting
+    "bubble": "sorting",
+    "bubble_sort": "sorting",
+    "insertion": "sorting",
+    "insertion_sort": "sorting",
+    "selection": "sorting",
+    "selection_sort": "sorting",
+    "quick": "sorting",
+    "quick_sort": "sorting",
+    "merge": "sorting",
+    "merge_sort": "sorting",
+    "heap": "sorting",
+    "sort": "sorting",
+    "sorting": "sorting",
+
+    # Search
+    "search": "search",
+    "binary_search": "search",
+    "linear_search": "search",
+    "searching": "search",
+
+    # Graph
+    "graph": "graph",
+    "bfs": "graph",
+    "dfs": "graph",
+    "dijkstra": "graph",
+    "astar": "graph",
+
+    # Tree & Structures
+    "tree": "tree",
+    "balanced": "tree",
+    "avl": "tree",
+    "rbtree": "tree",
+    "btree": "tree",
+    "trie": "tree",
+    "advanced": "tree",
+    "structures": "tree",
+    "traversal": "tree",
+
+    # FIFO / LIFO
+    "fifo_lifo": "fifo_lifo",
+    "stack": "fifo_lifo",
+    "queue": "fifo_lifo",
+    "circular_queue": "fifo_lifo",
+    "deque": "fifo_lifo",
+
+    # Encoding & Crypto
+    "encoding": "encoding",
+    "base64": "encoding",
+    "enigma": "encoding",
+
+    # CRC
+    "crc": "crc",
+    "crc_rs": "crc",
+
+    # Array & Simple Visuals
+    "array": "array",
+    "array_concepts": "array",
+    "array_2d": "array",
+    "matrix": "array",
+    "binary_bits": "array",
+    "simple_visual": "array",
+    "wow_easy": "array",
+    "factorial": "array",
+
+    # String Search
+    "string": "string",
+    "string_search": "string",
+    "kmp": "string",
+
+    # Fourier
+    "fourier": "fourier",
+    "dft": "fourier",
+    "fft": "fourier",
+
+    # Program Structure
+    "program_structure": "program_structure",
+    "for_loop": "program_structure",
+}
+
 class PluginLoader:
     def __init__(self, plugins_dir: str = "plugins", api_manager=None):
         self.plugins_dir = pathlib.Path(__file__).parent.parent / plugins_dir
@@ -37,30 +118,37 @@ class PluginLoader:
     def _get_feature_name(self, plugin: AlgorithmPluginBase, folder_name: str = "") -> str:
         ptype = getattr(plugin, "plugin_type", getattr(plugin, "type", "")).lower()
         pid = getattr(plugin, "id", "").lower()
+        fname = folder_name.lower()
 
-        if ptype in ("sorting", "sort") or "sort" in pid or "bubble" in pid or "insertion" in pid or "selection" in pid or "merge" in pid or "quick" in pid:
-            return "sorting"
-        if ptype in ("search", "searching") or "search" in pid or "binary_search" in pid:
-            return "search"
-        if ptype == "graph" or "graph" in pid or "astar" in pid or "dijkstra" in pid:
-            return "graph"
-        if ptype in ("tree", "btree", "trie", "traversal", "structure", "structures") or "avl" in pid or "rbtree" in pid or "btree" in pid or "tree" in pid:
-            return "tree"
-        if ptype in ("fifo_lifo", "stack", "queue", "circular_queue", "deque") or folder_name == "fifo_lifo":
-            return "fifo_lifo"
-        if ptype in ("encoding", "base64", "enigma") or folder_name in ("encoding", "enigma"):
-            return "encoding"
-        if ptype in ("crc", "crc_rs") or folder_name == "crc_rs":
-            return "crc"
-        if ptype in ("array", "array_concepts", "matrix", "array_2d", "binary_bits") or folder_name in ("array_concepts", "simple_visual", "wow_easy"):
-            return "array"
-        if ptype in ("string", "string_search", "kmp") or folder_name == "string_search":
-            return "string"
-        if ptype in ("fourier", "dft", "fft") or folder_name == "fourier":
-            return "fourier"
+        # 1. Direct dictionary lookup
+        for key in (ptype, pid, fname):
+            if key in FEATURE_MAPPINGS:
+                return FEATURE_MAPPINGS[key]
 
-        if folder_name:
-            return folder_name.lower()
+        # 2. Keyword check
+        for key in (ptype, pid, fname):
+            if "sort" in key:
+                return "sorting"
+            if "search" in key:
+                return "search"
+            if "graph" in key or "path" in key:
+                return "graph"
+            if "tree" in key or "node" in key:
+                return "tree"
+            if "queue" in key or "stack" in key or "fifo" in key:
+                return "fifo_lifo"
+            if "encod" in key or "cipher" in key:
+                return "encoding"
+            if "crc" in key:
+                return "crc"
+            if "array" in key or "matrix" in key:
+                return "array"
+            if "string" in key:
+                return "string"
+            if "fourier" in key:
+                return "fourier"
+
+        # 3. Default fallback
         return "general"
     
     def load_all(self):
