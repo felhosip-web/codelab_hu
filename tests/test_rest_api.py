@@ -9,6 +9,7 @@ from pathlib import Path
 from core.plugin_system import PluginLoader
 from core.engine import Engine
 from core.rest_api import SecureRESTAPIServer, RESTConfig
+from core.version import REST_API_VERSION, API_MANAGER_VERSION, MAIN_VERSION
 
 class TestRESTAPI(unittest.TestCase):
     @classmethod
@@ -71,9 +72,9 @@ class TestRESTAPI(unittest.TestCase):
         status, res = self._make_request("/api/v2/status", headers=headers)
         self.assertEqual(status, 200)
         self.assertEqual(res["status"], "ok")
-        self.assertEqual(res["rest_api_version"], "1.0.0")
-        self.assertEqual(res["api_version"], "3.0.0")
-        self.assertEqual(res["version"], "3.5.0")
+        self.assertEqual(res["rest_api_version"], str(REST_API_VERSION))
+        self.assertEqual(res["api_version"], str(API_MANAGER_VERSION))
+        self.assertEqual(res["version"], str(MAIN_VERSION))
 
     def test_get_plugins_unauthorized(self):
         status, res = self._make_request("/api/v2/plugins")

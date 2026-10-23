@@ -5,8 +5,12 @@ from pathlib import Path
 from core.api_manager import APIManager
 from core.plugin_system import PluginLoader
 from core.engine import Engine
+from core.version import API_MANAGER_VERSION
 
 class TestAPIManagerIntegration(unittest.TestCase):
+    def test_version_constants(self):
+        self.assertEqual(self.api_manager.config.current_version, str(API_MANAGER_VERSION))
+
     def setUp(self):
         self.api_manager = APIManager("saves/test_api_config.json")
 

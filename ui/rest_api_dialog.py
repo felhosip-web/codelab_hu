@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 import json
 from pathlib import Path
+from core.version import REST_API_VERSION, API_MANAGER_VERSION
 
 class RESTAPIDialog(QDialog):
     def __init__(self, rest_server, plugin_loader=None, engine=None, parent=None):
@@ -155,8 +156,8 @@ class RESTAPIDialog(QDialog):
         docs_text = QTextEdit()
         docs_text.setReadOnly(True)
         docs_text.setStyleSheet("font-family: monospace; font-size: 11px; background: #2d2d3d; color: #f1f2f6;")
-        docs_text.setText("""
-🔒 BIZTONSÁGOS REST API v1.0.0 (API Manager v3.0.0) - VÉDELEM ILLETÉKTELEN HASZNÁLAT ELLEN
+        docs_text.setText(f"""
+🔒 BIZTONSÁGOS REST API v{REST_API_VERSION} (API Manager v{API_MANAGER_VERSION}) - VÉDELEM ILLETÉKTELEN HASZNÁLAT ELLEN
 
 Nyílt részek és védelmük:
 
@@ -164,7 +165,7 @@ Nyílt részek és védelmük:
    - Védve: IP whitelist, rate limit, API kulcs ha require_api_key=True
    - Jog: read
    - Alapból: csak localhost, kulcs kell
-   - Válasz tartalmazza: "api_version" (3.0.0), "rest_api_version" (1.0.0), "version" (app version)
+   - Válasz tartalmazza: "api_version" ({API_MANAGER_VERSION}), "rest_api_version" ({REST_API_VERSION}), "version" (app version)
 
 2. /api/v2/plugins (GET) - Plugin lista
    - Védve: IP, rate limit, API kulcs

@@ -5,17 +5,18 @@ from PySide6.QtWidgets import (
     QSlider, QComboBox, QSpinBox, QGroupBox, QMessageBox
 )
 from PySide6.QtCore import Qt
+from core.version import API_MANAGER_VERSION
 
 class APIManagerDialog(QDialog):
     def __init__(self, api_manager, parent=None):
         super().__init__(parent)
         self.api_manager = api_manager
-        self.setWindowTitle("API Manager 2.0 - konfigurálható, finomhangolható")
+        self.setWindowTitle(f"API Manager {API_MANAGER_VERSION} - konfigurálható, finomhangolható")
         self.setMinimumSize(900, 600)
         
         layout = QVBoxLayout(self)
         
-        title = QLabel("🔌 API 2.0 - konfigurálható, feature flag, hookok, kompatibilitás")
+        title = QLabel(f"🔌 API {API_MANAGER_VERSION} - konfigurálható, feature flag, hookok, kompatibilitás")
         title.setStyleSheet("background: #6c5ce7; color: white; padding: 8px; font-weight: bold; border-radius: 4px;")
         layout.addWidget(title)
         

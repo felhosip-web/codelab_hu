@@ -25,6 +25,7 @@ from core.plugin_system import PluginLoader
 from core.engine import Engine
 from core.api_manager import APIManager
 from core.rest_api import SecureRESTAPIServer
+from core.version import API_MANAGER_VERSION
 from ui.rest_api_dialog import RESTAPIDialog
 from ui.api_manager_dialog import APIManagerDialog
 from ui.widgets import ArrayViewerWidget, CodeViewerWidget, StatsBar
@@ -51,7 +52,7 @@ class MainWindow(QMainWindow):
         tools_menu = menubar.addMenu("🌐 API / Eszközök")
         rest_api_action = tools_menu.addAction("🔒 REST API Kezelő...")
         rest_api_action.triggered.connect(self.open_rest_api_dialog)
-        api_manager_action = tools_menu.addAction("🔌 API Manager 2.0...")
+        api_manager_action = tools_menu.addAction(f"🔌 API Manager {API_MANAGER_VERSION}...")
         api_manager_action.triggered.connect(self.open_api_manager_dialog)
 
         # Adatok
@@ -299,6 +300,9 @@ class MainWindow(QMainWindow):
             self.bottom_btn_breakpoint.setToolTip("Breakpoint funkció kikapcsolva (API Manager)")
         else:
             self.bottom_btn_breakpoint.setToolTip("Töréspont ki/be kapcsolása")
+
+        perf_ok = self.api_manager.is_feature_enabled("performance_monitor")
+        self.stats_bar.setVisible(perf_ok)
 
     def toggle_play(self):
         if not self.api_manager.is_feature_enabled("playback") or not self.api_manager.config.enable_animations:

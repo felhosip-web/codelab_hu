@@ -61,6 +61,12 @@ PLUGIN_API_HISTORY = {
     "1.0.0": "Alap plugin rendszer: get_steps(), get_code(), id, name, icon, codes, time/space"
 }
 
+# === API MANAGER VERZIÓ ===
+API_MANAGER_VERSION = Version(3, 0, 0)
+
+# === REST API VERZIÓ ===
+REST_API_VERSION = Version(1, 0, 0)
+
 
 def check_plugin_compatibility(plugin_api_required: str) -> Tuple[bool, str]:
     """Ellenőrzi hogy a plugin kompatibilis-e a jelenlegi API-val."""
@@ -77,5 +83,15 @@ def check_plugin_compatibility(plugin_api_required: str) -> Tuple[bool, str]:
         return False, f"Verzió parse hiba: {e}"
 
 
+def get_version_info() -> dict:
+    return {
+        "main": str(MAIN_VERSION),
+        "codename": MAIN_CODENAME,
+        "plugin_api": str(PLUGIN_API_VERSION),
+        "api_manager": str(API_MANAGER_VERSION),
+        "rest_api": str(REST_API_VERSION),
+    }
+
+
 def get_version_string():
-    return f"{MAIN_VERSION} ({MAIN_CODENAME}) | Plugin API {PLUGIN_API_VERSION}"
+    return f"{MAIN_VERSION} ({MAIN_CODENAME}) | API Manager {API_MANAGER_VERSION} | REST API {REST_API_VERSION} | Plugin API {PLUGIN_API_VERSION}"

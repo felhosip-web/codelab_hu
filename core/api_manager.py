@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-API 2.0 - konfigurálható, finomhangolható, feature flag, hookok, kompatibilitás
+API 3.0 - konfigurálható, finomhangolható, feature flag, hookok, kompatibilitás
 """
 import json
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Any, Callable, Optional
 from datetime import datetime
+from core.version import API_MANAGER_VERSION
 
 @dataclass
 class APIFeature:
@@ -30,9 +31,9 @@ class APIVersion:
 
 @dataclass
 class APIConfig:
-    current_version: str = "3.0.0"
+    current_version: str = str(API_MANAGER_VERSION)
     min_supported_version: str = "1.0.0"
-    max_supported_version: str = "3.0.0"
+    max_supported_version: str = str(API_MANAGER_VERSION)
     
     # Teljesítmény finomhangolás
     enable_caching: bool = True
@@ -139,7 +140,7 @@ class APIManager:
             APIVersion("1.1.0", ["sorting", "search", "graph", "tree", "hash", "string", "dynamic_params"], [], "2024-02-01", ["1.0.0"]),
             APIVersion("2.0.0", ["sorting", "search", "graph", "tree", "hash", "string", "encoding", "dynamic_params", "state_manager", "engine", "performance_monitor"], ["old_array_viewer"], "2024-06-01", ["1.0.0", "1.1.0"]),
             APIVersion("2.5.0", list(self.features.keys()), [], "2024-12-01", ["1.0.0", "1.1.0", "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0"]),
-            APIVersion("3.0.0", list(self.features.keys()), ["feature_flags_enforced"], "2025-01-01", ["1.0.0", "1.1.0", "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"]),
+            APIVersion(str(API_MANAGER_VERSION), list(self.features.keys()), ["feature_flags_enforced"], "2025-01-01", ["1.0.0", "1.1.0", "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"]),
         ]
         for ver in versions:
             self.versions[ver.version] = ver

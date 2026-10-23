@@ -13,9 +13,7 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import urllib.parse
-from core.version import MAIN_VERSION
-
-REST_API_VERSION = "1.0.0"
+from core.version import MAIN_VERSION, API_MANAGER_VERSION, REST_API_VERSION
 
 @dataclass
 class APIKey:
@@ -233,12 +231,12 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Nincs olvasási jog", 403)
                 return
 
-            api_ver = self.api_manager.config.current_version if self.api_manager else "3.0.0"
+            api_ver = str(self.api_manager.config.current_version) if (self.api_manager and hasattr(self.api_manager, 'config')) else str(API_MANAGER_VERSION)
             self.send_json({
                 "status": "ok",
                 "version": str(MAIN_VERSION),
                 "api_version": api_ver,
-                "rest_api_version": REST_API_VERSION,
+                "rest_api_version": str(REST_API_VERSION),
                 "rest_config": {
                     "enabled": self.rest_config.enabled,
                     "host": self.rest_config.host,
