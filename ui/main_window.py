@@ -22,6 +22,9 @@ from PySide6.QtWidgets import (
 
 from core.config import APP_NAME, LANGUAGES, UI_TEXTS
 from core.plugin_system import PluginLoader
+from core.engine import Engine
+from core.rest_api import SecureRESTAPIServer
+from ui.rest_api_dialog import RESTAPIDialog
 from ui.widgets import ArrayViewerWidget, CodeViewerWidget, StatsBar
 
 
@@ -31,10 +34,18 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(UI_TEXTS["app_title"])
         self.resize(1366, 900)
 
-        # PLUGIN BETÖLTÉS - ez a kulcs!
+        # ENGINE ÉS PLUGIN BETÖLTÉS
+        self.engine = Engine()
         self.plugin_loader = PluginLoader()
         self.plugin_loader.load_all()
         self.plugins_list = self.plugin_loader.list_plugins()
+        self.rest_server = SecureRESTAPIServer(plugin_loader=self.plugin_loader, engine=self.engine)
+
+        # Menüsor
+        menubar = self.menuBar()
+        tools_menu = menubar.addMenu("🌐 API / Eszközök")
+        rest_api_action = tools_menu.addAction("🔒 REST API Kezelő...")
+        rest_api_action.triggered.connect(self.open_rest_api_dialog)
 
         # Adatok
         self.current_array = [3, 4, 6, 8, 9, 5, 2, 10, 7, 1]
@@ -303,6 +314,10 @@ class MainWindow(QMainWindow):
             self.show_step(self.steps[self.current_step_idx])
         if self.is_playing:
             self.timer.start(self.speed_slider.value())
+
+    def open_rest_api_dialog(self):
+        dialog = RESTAPIDialog(self.rest_server, plugin_loader=self.plugin_loader, engine=self.engine, parent=self)
+        dialog.exec()
 
     def on_toggle_breakpoint(self):
         # Breakpoint toggling for the current step line

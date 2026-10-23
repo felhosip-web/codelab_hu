@@ -9,9 +9,13 @@ import json
 from pathlib import Path
 
 class RESTAPIDialog(QDialog):
-    def __init__(self, rest_server, parent=None):
+    def __init__(self, rest_server, plugin_loader=None, engine=None, parent=None):
         super().__init__(parent)
         self.rest_server = rest_server
+        if plugin_loader:
+            self.rest_server.set_plugin_loader(plugin_loader)
+        if engine:
+            self.rest_server.set_engine(engine)
         self.setWindowTitle("REST API - biztonságos, nyílt részek védelemmel")
         self.setMinimumSize(900, 650)
         
@@ -164,13 +168,17 @@ Nyílt részek és védelmük:
 2. /api/v2/plugins (GET) - Plugin lista
    - Védve: IP, rate limit, API kulcs
    - Jog: read
-   - Csak olvasás, nem módosít
+   - Csak olvasás, a PluginLoader által betöltött valódi plugineket adja vissza (id, name, version, type, time_complexity, space_complexity, description)
 
 3. /api/v2/run (POST) - Futtatás
    - Védve: IP, rate limit, API kulcs, execute jog, sandbox, max méret
    - Jog: execute
-   - Alapból TILTVA! enable_execute_endpoints=False
-   - Sandbox: max memória, timeout
+   - Meghívja a valódi Engine / plugin get_steps() metódusát
+   - Body példa: {"plugin_id": "bubble", "params": {...}, "array": [5, 3, 8, 1]}
+   - Visszaadja a lépéseket JSON formátumban (max 200 lépés)
+   - Ha a plugin nem található: 404
+   - Ha execute jog nincs: 403
+   - Sandbox timeout és max_request_size továbbra is érvényesül
 
 4. /api/v2/config (GET) - Konfig
    - Védve: admin jog

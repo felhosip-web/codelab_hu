@@ -73,11 +73,49 @@ class RateLimiter:
         self.requests[identifier].append(now)
         return True
 
+def _serialize_val(val):
+    if isinstance(val, (int, float, str, bool, type(None))):
+        return val
+    elif isinstance(val, (list, tuple)):
+        return [_serialize_val(x) for x in val]
+    elif isinstance(val, dict):
+        return {str(k): _serialize_val(v) for k, v in val.items()}
+    elif hasattr(val, "to_dict") and callable(val.to_dict):
+        return val.to_dict()
+    elif hasattr(val, "__dict__"):
+        return {k: _serialize_val(v) for k, v in val.__dict__.items() if not k.startswith("_")}
+    else:
+        return str(val)
+
+def _run_with_timeout(func, timeout=10):
+    result = []
+    exception = []
+
+    def target():
+        try:
+            res = func()
+            result.append(res)
+        except Exception as e:
+            exception.append(e)
+
+    t = threading.Thread(target=target)
+    t.daemon = True
+    t.start()
+    t.join(timeout)
+
+    if t.is_alive():
+        return None, "Sandbox timeout: a futtatási idő túllépte a korlátot"
+    if exception:
+        return None, str(exception[0])
+    return (result[0] if result else []), None
+
 class SecureRESTHandler(BaseHTTPRequestHandler):
     api_manager = None
     rest_config = None
     api_keys: Dict[str, APIKey] = {}
     rate_limiter = RateLimiter()
+    plugin_loader = None
+    engine = None
     
     def log_message(self, format, *args):
         # Saját logolás
@@ -208,14 +246,22 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             if not self.check_permission(key_obj, "read"):
                 self.send_error_json("Nincs olvasási jog", 403)
                 return
-            # Plugin lista (mock, valódi loader-t majd kívülről kap)
+
+            plugins = self.plugin_loader.list_plugins() if self.plugin_loader else []
+            plugin_list = []
+            for p in plugins:
+                plugin_list.append({
+                    "id": getattr(p, "id", ""),
+                    "name": getattr(p, "name", ""),
+                    "version": getattr(p, "version", "1.0.0"),
+                    "type": getattr(p, "plugin_type", getattr(p, "type", "general")),
+                    "time_complexity": getattr(p, "time_complexity", ""),
+                    "space_complexity": getattr(p, "space_complexity", ""),
+                    "description": getattr(p, "description", "")
+                })
             self.send_json({
-                "plugins": [
-                    {"id": "stack", "name": "Verem - LIFO", "version": "1.0.0", "type": "fifo_lifo"},
-                    {"id": "queue", "name": "Sor - FIFO", "version": "1.0.0", "type": "fifo_lifo"},
-                    {"id": "bubble", "name": "Buborék rendezés", "version": "1.1.0", "type": "sort"}
-                ],
-                "count": 3
+                "plugins": plugin_list,
+                "count": len(plugin_list)
             })
         
         elif path == "/api/v2/config":
@@ -254,19 +300,80 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Nincs futtatási jog - engedélyezd a beállításokban és adj execute jogot a kulcshoz", 403)
                 return
             
-            # Sandbox ellenőrzés
-            if self.rest_config.enable_sandbox:
-                # Egyszerű validáció
-                plugin_id = data.get("plugin_id", "")
-                if not plugin_id or len(plugin_id) > 50:
-                    self.send_error_json("Érvénytelen plugin_id", 400)
-                    return
+            plugin_id = data.get("plugin_id") or data.get("id") or ""
+            if not plugin_id:
+                self.send_error_json("Hiányzó plugin_id", 400)
+                return
+
+            plugin = None
+            if self.plugin_loader:
+                plugin = self.plugin_loader.get_plugin(plugin_id)
+                if not plugin:
+                    for p_id, p in self.plugin_loader.plugins.items():
+                        if p_id == plugin_id or p_id.startswith(plugin_id) or plugin_id in p_id:
+                            plugin = p
+                            break
             
+            if not plugin:
+                self.send_error_json(f"Plugin nem található: {plugin_id}", 404)
+                return
+
+            params = data.get("params")
+            if params and isinstance(params, dict):
+                for k, v in params.items():
+                    if hasattr(plugin, "set_param"):
+                        try:
+                            plugin.set_param(k, v)
+                        except Exception:
+                            pass
+
+            array = data.get("array")
+            if array is None:
+                if hasattr(plugin, "generate_input") and callable(plugin.generate_input):
+                    try:
+                        array = plugin.generate_input()
+                    except Exception:
+                        array = [5, 3, 8, 1]
+                else:
+                    array = [5, 3, 8, 1]
+
+            def run_func():
+                if self.engine:
+                    self.engine.set_plugin(plugin, array)
+                    self.engine.generate_steps(array)
+                    return self.engine.steps
+                else:
+                    return list(plugin.get_steps(array))
+
+            if self.rest_config and self.rest_config.enable_sandbox:
+                timeout_sec = getattr(self.rest_config, "sandbox_timeout_sec", 10)
+                raw_steps, err = _run_with_timeout(run_func, timeout=timeout_sec)
+                if err:
+                    status = 408 if "timeout" in str(err).lower() else 500
+                    self.send_error_json(f"Futtatási hiba / Sandbox: {err}", status)
+                    return
+            else:
+                try:
+                    raw_steps = run_func()
+                except Exception as e:
+                    self.send_error_json(f"Futtatási hiba: {e}", 500)
+                    return
+
+            if raw_steps is None:
+                raw_steps = []
+
+            total_steps = len(raw_steps)
+            limited_steps = raw_steps[:200]
+            serialized_steps = [_serialize_val(s) for s in limited_steps]
+
             self.send_json({
-                "result": f"Plugin {data.get('plugin_id')} futtatva (sandbox)",
-                "steps": 10,
-                "sandbox": self.rest_config.enable_sandbox,
-                "timeout": self.rest_config.sandbox_timeout_sec
+                "plugin_id": plugin.id,
+                "plugin_name": getattr(plugin, "name", plugin.id),
+                "array": array,
+                "steps_count": len(serialized_steps),
+                "total_steps": total_steps,
+                "truncated": total_steps > 200,
+                "steps": serialized_steps
             })
         
         elif path == "/api/v2/keys":
@@ -292,15 +399,25 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             self.send_error_json(f"Ismeretlen endpoint: {path}", 404)
 
 class SecureRESTAPIServer:
-    def __init__(self, config_path="saves/rest_config.json", keys_path="saves/api_keys.json"):
+    def __init__(self, config_path="saves/rest_config.json", keys_path="saves/api_keys.json", plugin_loader=None, engine=None):
         self.config_path = Path(config_path)
         self.keys_path = Path(keys_path)
         self.config = RESTConfig()
         self.api_keys: Dict[str, APIKey] = {}
         self.server: Optional[HTTPServer] = None
         self.thread: Optional[threading.Thread] = None
+        self.plugin_loader = plugin_loader
+        self.engine = engine
         self.load_config()
         self.load_keys()
+
+    def set_plugin_loader(self, plugin_loader):
+        self.plugin_loader = plugin_loader
+        SecureRESTHandler.plugin_loader = plugin_loader
+
+    def set_engine(self, engine):
+        self.engine = engine
+        SecureRESTHandler.engine = engine
     
     def load_config(self):
         if self.config_path.exists():
@@ -368,6 +485,8 @@ class SecureRESTAPIServer:
         # Beállítjuk a handler osztály változóit
         SecureRESTHandler.rest_config = self.config
         SecureRESTHandler.api_keys = self.api_keys
+        SecureRESTHandler.plugin_loader = self.plugin_loader
+        SecureRESTHandler.engine = self.engine
         
         try:
             self.server = HTTPServer((self.config.host, self.config.port), SecureRESTHandler)
@@ -382,6 +501,7 @@ class SecureRESTAPIServer:
     def stop(self):
         if self.server:
             self.server.shutdown()
+            self.server.server_close()
             self.server = None
             self.thread = None
             print("REST API leállítva")
