@@ -103,7 +103,12 @@ class StateManagerDialog(QDialog):
             return
         try:
             state = self.engine.load_state(Path(path_str))
-            QMessageBox.information(self, "Betöltve", f"Betöltve: {state.plugin_id} | {state.description}\nArray: {state.array}\nParams: {state.params}")
+            mismatch_msg = ""
+            if getattr(state, 'plugin_mismatch', False):
+                mismatch_msg = f"\n\nFigyelem: A mentett plugin ({state.plugin_id}) eltér a jelenlegi plugintól!"
+            QMessageBox.information(self, "Betöltve", f"Betöltve: {state.plugin_id} | {state.description}\nArray: {state.array}\nParams: {state.params}{mismatch_msg}")
+            if self.parent() and hasattr(self.parent(), 'sync_from_engine'):
+                self.parent().sync_from_engine()
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Hiba", f"Betöltés hiba: {e}")
@@ -112,6 +117,8 @@ class StateManagerDialog(QDialog):
         state = self.engine.undo()
         if state:
             QMessageBox.information(self, "Undo", f"Undo: {state.description} | {state.plugin_id}")
+            if self.parent() and hasattr(self.parent(), 'sync_from_engine'):
+                self.parent().sync_from_engine()
             self.update_info()
             self.accept()
         else:
@@ -121,6 +128,8 @@ class StateManagerDialog(QDialog):
         state = self.engine.redo()
         if state:
             QMessageBox.information(self, "Redo", f"Redo: {state.description} | {state.plugin_id}")
+            if self.parent() and hasattr(self.parent(), 'sync_from_engine'):
+                self.parent().sync_from_engine()
             self.update_info()
             self.accept()
         else:

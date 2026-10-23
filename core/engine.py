@@ -5,21 +5,23 @@ Core motor fejlesztés - állapotmentés, visszatöltés, undo/redo, snapshotok
 import json
 import time
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from typing import Any, List, Dict, Optional
 from datetime import datetime
+
+from core.version import MAIN_VERSION
 
 @dataclass
 class AppState:
     version: str
     plugin_id: str
     plugin_version: str
-    array: List[int]
+    array: List[Any]
     current_step_idx: int
     params: Dict[str, Any]
     timestamp: str
     description: str = ""
-    stats: Dict[str, Any] = None
+    stats: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self):
         return asdict(self)
@@ -38,9 +40,11 @@ class StateManager:
         self.auto_save_enabled = True
         self.last_auto_save = time.time()
     
-    def create_snapshot(self, plugin_id: str, plugin_version: str, array: List[int], 
+    def create_snapshot(self, plugin_id: str, plugin_version: str, array: List[Any],
                         step_idx: int, params: Dict[str, Any], description="",
-                        stats: Dict[str, Any]=None, version="1.9.0") -> AppState:
+                        stats: Dict[str, Any]=None, version=None) -> AppState:
+        if version is None:
+            version = str(MAIN_VERSION)
         state = AppState(
             version=version,
             plugin_id=plugin_id,
@@ -69,7 +73,26 @@ class StateManager:
         return AppState.from_dict(data)
     
     def list_saves(self) -> List[Path]:
-        return sorted(self.save_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        EXCLUDE_FILES = {
+            "api_config.json",
+            "rest_config.json",
+            "api_keys.json",
+            "breakpoints.json",
+            "keybindings.json",
+            "session_export.json"
+        }
+        saves = []
+        for p in self.save_dir.glob("*.json"):
+            if p.name in EXCLUDE_FILES or p.name.startswith("test_"):
+                continue
+            try:
+                with open(p, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "plugin_id" in data and "current_step_idx" in data:
+                    saves.append(p)
+            except Exception:
+                continue
+        return sorted(saves, key=lambda p: p.stat().st_mtime, reverse=True)
     
     def push_history(self, state: AppState):
         if self.history_index < len(self.history)-1:
@@ -146,8 +169,9 @@ class PerformanceMonitor:
         return {name: self.get_stats(name) for name in self.metrics}
 
 class Engine:
-    def __init__(self, api_manager=None):
+    def __init__(self, api_manager=None, breakpoint_manager=None):
         self.api_manager = api_manager
+        self.breakpoint_manager = breakpoint_manager
         self.state_manager = StateManager()
         self.perf_monitor = PerformanceMonitor()
         self.current_plugin = None
@@ -184,10 +208,22 @@ class Engine:
         if use_perf:
             self.perf_monitor.start("generate_steps")
 
+        if self.current_plugin is None:
+            self.steps = []
+            self.step_idx = 0
+            if use_perf:
+                self.perf_monitor.end("generate_steps")
+            return 0.0
+
         if input_data is None:
             input_data = self.current_array
 
-        self.steps = list(self.current_plugin.get_steps(input_data))
+        try:
+            self.steps = list(self.current_plugin.get_steps(input_data))
+        except Exception as e:
+            print(f"[Engine] Error generating steps: {e}")
+            self.steps = []
+
         self.step_idx = 0
 
         if self.api_manager:
@@ -196,15 +232,40 @@ class Engine:
         elapsed = 0.0
         if use_perf:
             elapsed = self.perf_monitor.end("generate_steps")
+
+        use_state = self.api_manager.is_feature_enabled("state_manager") if self.api_manager else True
+        if use_state:
+            self.state_manager.auto_save(self.get_current_state())
+
         return elapsed
+
     def next_step(self):
-        if self.step_idx < len(self.steps)-1:
-            self.step_idx+=1
-            return self.steps[self.step_idx]
+        if self.step_idx < len(self.steps) - 1:
+            self.step_idx += 1
+            step = self.steps[self.step_idx]
+
+            stopped = False
+            bp_ok = self.api_manager.is_feature_enabled("breakpoints") if self.api_manager else True
+            if bp_ok and self.breakpoint_manager and self.current_plugin:
+                try:
+                    line = getattr(step, 'code_line', getattr(step, 'line', None))
+                    if line is not None:
+                        plugin_id = getattr(self.current_plugin, 'id', '')
+                        should_stop, is_log, log_msg, _ = self.breakpoint_manager.should_break(plugin_id, line)
+                        if is_log and log_msg:
+                            print(f"[Breakpoint Log] {log_msg}")
+                        if should_stop:
+                            stopped = True
+                except Exception as e:
+                    print(f"[Engine] Breakpoint check error: {e}")
+
+            setattr(step, 'stopped', stopped)
+            return step
         return None
+
     def prev_step(self):
         if self.step_idx > 0:
-            self.step_idx-=1
+            self.step_idx -= 1
             return self.steps[self.step_idx]
         return None
     def get_current_state(self) -> AppState:
@@ -225,20 +286,41 @@ class Engine:
             state.description = description
         path = self.state_manager.save_to_file(state)
         return path
+    def _sync_steps_after_state_change(self, target_step_idx: int):
+        if self.current_plugin:
+            self.generate_steps(self.current_array)
+        if self.steps:
+            self.step_idx = max(0, min(target_step_idx, len(self.steps) - 1))
+        else:
+            self.step_idx = 0
+
     def load_state(self, path: Path):
+        """
+        Loads an AppState from file.
+        Updates current_array, regenerates steps, and clamps step_idx.
+        Sets state.plugin_mismatch = True if state.plugin_id differs from current_plugin.id.
+        """
         state = self.state_manager.load_from_file(path)
         self.current_array = state.array
-        self.step_idx = state.current_step_idx
+
+        plugin_mismatch = False
+        if self.current_plugin is None or getattr(self.current_plugin, 'id', None) != state.plugin_id:
+            plugin_mismatch = True
+
+        self._sync_steps_after_state_change(state.current_step_idx)
+        setattr(state, 'plugin_mismatch', plugin_mismatch)
         return state
+
     def undo(self):
         state = self.state_manager.undo()
         if state:
             self.current_array = state.array
-            self.step_idx = state.current_step_idx
+            self._sync_steps_after_state_change(state.current_step_idx)
         return state
+
     def redo(self):
         state = self.state_manager.redo()
         if state:
             self.current_array = state.array
-            self.step_idx = state.current_step_idx
+            self._sync_steps_after_state_change(state.current_step_idx)
         return state

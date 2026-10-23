@@ -37,10 +37,12 @@ Lista: `list_saves()` időrendben
 ## UI integráció
 
 ### MainWindow
-- `self.engine = Engine()`
-- Plugin váltáskor: `engine.set_plugin(plugin, array)`
-- Resetkor: `generate_input()` + `generate_steps()`
-- Gombok: 💾 Mentés, 💾 Állapotkezelő, ↩️ Undo, ↪️ Redo
+- `self.engine = Engine(api_manager, breakpoint_manager)`
+- Plugin váltáskor / resetkor: `engine.set_plugin(plugin, array)` majd `engine.generate_steps(array)`
+- Léptetés: `engine.next_step()` és `engine.prev_step()`
+- Undo / Redo / Betöltés: `engine.undo()`, `engine.redo()`, `engine.load_state(path)` automatikusan újragenerálja a lépéseket és szinkronizálja a `step_idx`-et.
+- `list_saves()`: automatikusan kiszűri a konfigurációs és nem AppState formátumú JSON fájlokat (`api_config`, `rest_config`, `breakpoints`, stb.).
+- Gombok / Menü: 💾 Mentés, 📂 Állapotkezelő, ↩️ Undo, ↪️ Redo (Állapot menü és bal oldali vezérlőpult).
 
 ### StateManagerDialog
 - Lista: összes mentés időrendben
