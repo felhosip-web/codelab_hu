@@ -2,7 +2,7 @@
 
 ![Version](https://img.shields.io/badge/version-3.4.0-blue.svg)
 ![License](https://img.shields.io/badge/license-GNU%20GPL%20v3-green.svg)
-![Plugins](https://img.shields.io/badge/plugins-20%2B-orange.svg)
+![Plugins](https://img.shields.io/badge/plugins-20-orange.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
 **CodeLab HU** egy magyar nyelvű, moduláris, interaktív algoritmus-vizualizáló és programstruktúra-oktató alkalmazás. Célja, hogy látványos és lépésről lépésre követhető módon mutassa be az alapvető és haladó informatikai koncepciókat, algoritmusokat, adatstruktúrákat, kódolási eljárásokat és vezérlési szerkezeteket.
@@ -11,10 +11,10 @@
 
 ## 🚀 Gyors indítás
 
-### 1. Kónozás
+### 1. Klónozás
 ```bash
-git clone https://github.com/felhosi/codelab-hu.git
-cd codelab-hu
+git clone https://github.com/felhosip-web/codelab_hu.git
+cd codelab_hu
 ```
 
 ### 2. Függőségek telepítése
