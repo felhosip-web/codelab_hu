@@ -22,6 +22,12 @@ from PySide6.QtWidgets import (
 
 from core.config import APP_NAME, LANGUAGES, UI_TEXTS
 from core.plugin_system import PluginLoader
+from core.engine import Engine
+from core.api_manager import APIManager
+from core.rest_api import SecureRESTAPIServer
+from core.version import API_MANAGER_VERSION
+from ui.rest_api_dialog import RESTAPIDialog
+from ui.api_manager_dialog import APIManagerDialog
 from ui.widgets import ArrayViewerWidget, CodeViewerWidget, StatsBar
 
 
@@ -31,10 +37,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(UI_TEXTS["app_title"])
         self.resize(1366, 900)
 
-        # PLUGIN BETÖLTÉS - ez a kulcs!
-        self.plugin_loader = PluginLoader()
+        # API MANAGER, ENGINE ÉS PLUGIN BETÖLTÉS
+        self.api_manager = APIManager()
+        self.engine = Engine(api_manager=self.api_manager)
+        self.plugin_loader = PluginLoader(api_manager=self.api_manager)
         self.plugin_loader.load_all()
         self.plugins_list = self.plugin_loader.list_plugins()
+        self.rest_server = SecureRESTAPIServer(plugin_loader=self.plugin_loader, engine=self.engine)
+
+        self.api_manager.register_hook("on_feature_toggle", self.refresh_plugin_list)
+
+        # Menüsor
+        menubar = self.menuBar()
+        tools_menu = menubar.addMenu("🌐 API / Eszközök")
+        rest_api_action = tools_menu.addAction("🔒 REST API Kezelő...")
+        rest_api_action.triggered.connect(self.open_rest_api_dialog)
+        api_manager_action = tools_menu.addAction(f"🔌 API Manager {API_MANAGER_VERSION}...")
+        api_manager_action.triggered.connect(self.open_api_manager_dialog)
 
         # Adatok
         self.current_array = [3, 4, 6, 8, 9, 5, 2, 10, 7, 1]
@@ -199,6 +218,7 @@ class MainWindow(QMainWindow):
         if self.current_plugin:
             self.on_language_changed("C++")
             self.update_plugin_info()
+        self.refresh_plugin_list()
 
     def update_plugin_info(self):
         if self.current_plugin:
@@ -245,14 +265,59 @@ class MainWindow(QMainWindow):
         self.current_array = [random.randint(1, 20) for _ in range(10)]
         self.reset()
 
+    def refresh_plugin_list(self, *args, **kwargs):
+        self.plugins_list = self.plugin_loader.list_plugins()
+        self.algo_list.blockSignals(True)
+        self.algo_list.clear()
+        for plugin in self.plugins_list:
+            self.algo_list.addItem(f"{plugin.icon} {plugin.name}")
+        self.algo_list.blockSignals(False)
+        if self.plugins_list:
+            if self.current_plugin not in self.plugins_list:
+                self.algo_list.setCurrentRow(0)
+                self.on_algo_changed(0)
+            else:
+                idx = self.plugins_list.index(self.current_plugin)
+                self.algo_list.setCurrentRow(idx)
+        else:
+            self.current_plugin = None
+            self.update_plugin_info()
+            self.reset()
+
+        # Update UI features (playback, breakpoints)
+        playback_ok = self.api_manager.is_feature_enabled("playback") and self.api_manager.config.enable_animations
+        self.btn_play.setEnabled(playback_ok)
+        self.bottom_btn_play.setEnabled(playback_ok)
+        if not playback_ok and self.is_playing:
+            self.timer.stop()
+            self.is_playing = False
+            self.btn_play.setText(f"▶ {UI_TEXTS['play']}")
+            self.bottom_btn_play.setText("▶")
+
+        bp_ok = self.api_manager.is_feature_enabled("breakpoints") or self.api_manager.is_feature_enabled("advanced_breakpoints")
+        self.bottom_btn_breakpoint.setEnabled(bp_ok)
+        if not bp_ok:
+            self.bottom_btn_breakpoint.setToolTip("Breakpoint funkció kikapcsolva (API Manager)")
+        else:
+            self.bottom_btn_breakpoint.setToolTip("Töréspont ki/be kapcsolása")
+
+        perf_ok = self.api_manager.is_feature_enabled("performance_monitor")
+        self.stats_bar.setVisible(perf_ok)
+
     def toggle_play(self):
+        if not self.api_manager.is_feature_enabled("playback") or not self.api_manager.config.enable_animations:
+            self.next_step()
+            return
+
         if self.is_playing:
             self.timer.stop()
             self.is_playing = False
             self.btn_play.setText(f"▶ {UI_TEXTS['play']}")
             self.bottom_btn_play.setText("▶")
         else:
-            self.timer.start(self.speed_slider.value())
+            anim_speed = max(0.1, self.api_manager.config.animation_speed)
+            speed = int(self.speed_slider.value() / anim_speed)
+            self.timer.start(speed)
             self.is_playing = True
             self.btn_play.setText(f"⏸ {UI_TEXTS['pause']}")
             self.bottom_btn_play.setText("⏸")
@@ -303,6 +368,15 @@ class MainWindow(QMainWindow):
             self.show_step(self.steps[self.current_step_idx])
         if self.is_playing:
             self.timer.start(self.speed_slider.value())
+
+    def open_rest_api_dialog(self):
+        dialog = RESTAPIDialog(self.rest_server, plugin_loader=self.plugin_loader, engine=self.engine, parent=self)
+        dialog.exec()
+
+    def open_api_manager_dialog(self):
+        dialog = APIManagerDialog(self.api_manager, parent=self)
+        dialog.exec()
+        self.refresh_plugin_list()
 
     def on_toggle_breakpoint(self):
         # Breakpoint toggling for the current step line
