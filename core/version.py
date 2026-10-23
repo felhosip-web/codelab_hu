@@ -1,34 +1,40 @@
-
+# -*- coding: utf-8 -*-
+"""
+CodeLab HU - Verziózási és Kompatibilitási Modul
+- Fő program verzió (MAIN_VERSION)
+- Plugin API verzió (PLUGIN_API_VERSION)
+- Kompatibilitás ellenőrzés
+"""
 from dataclasses import dataclass
+from typing import Tuple
+
 
 @dataclass
 class Version:
     major: int
     minor: int
     patch: int
-    def __str__(self):
-        return f"{self.major}.{self.minor}.{self.patch}"
+    suffix: str = ""  # pl. "-beta", "-rc1"
 
-MAIN_VERSION = Version(3, 4, 0)
-MAIN_CODENAME = "Program Szerkezet"
-API_VERSION = Version(1, 0, 0)
-class
-class Version:
-    major: int
-    minor: int
-    patch: int
-    suffix: str = ""  # pl "-beta", "-rc1"
-    
     def __str__(self):
         base = f"{self.major}.{self.minor}.{self.patch}"
         return base + self.suffix if self.suffix else base
-    
+
     def __lt__(self, other):
         return (self.major, self.minor, self.patch) < (other.major, other.minor, other.patch)
-    
+
+    def __le__(self, other):
+        return (self.major, self.minor, self.patch) <= (other.major, other.minor, other.patch)
+
+    def __gt__(self, other):
+        return (self.major, self.minor, self.patch) > (other.major, other.minor, other.patch)
+
     def __ge__(self, other):
-        return not self.__lt__(other)
-    
+        return (self.major, self.minor, self.patch) >= (other.major, other.minor, other.patch)
+
+    def __eq__(self, other):
+        return (self.major, self.minor, self.patch) == (other.major, other.minor, other.patch)
+
     @classmethod
     def parse(cls, s: str):
         # "1.2.3" vagy "1.2.3-beta"
@@ -37,21 +43,27 @@ class Version:
             s, suffix = s.split("-", 1)
             suffix = "-" + suffix
         parts = s.split(".")
-        return cls(int(parts[0]), int(parts[1]), int(parts[2]) if len(parts)>2 else 0, suffix)
+        return cls(
+            int(parts[0]),
+            int(parts[1]),
+            int(parts[2]) if len(parts) > 2 else 0,
+            suffix,
+        )
+
 
 # === FŐ PROGRAM VERZIÓ ===
-MAIN_VERSION = Version(1, 0, 0)  # 1.0.0 - első stabil plugin rendszerű kiadás
-MAIN_CODENAME = "Buborék-bázis"
+MAIN_VERSION = Version(3, 4, 0)
+MAIN_CODENAME = "Program Szerkezet"
 
 # === PLUGIN API VERZIÓ ===
-# Ezt növeljük ha a PluginBase interfész változik (breaking change -> major)
 PLUGIN_API_VERSION = Version(1, 0, 0)
 PLUGIN_API_HISTORY = {
     "1.0.0": "Alap plugin rendszer: get_steps(), get_code(), id, name, icon, codes, time/space"
 }
 
+
 def check_plugin_compatibility(plugin_api_required: str) -> Tuple[bool, str]:
-    """Ellenőrzi hogy a plugin kompatibilis-e a jelenlegi API-val"""
+    """Ellenőrzi hogy a plugin kompatibilis-e a jelenlegi API-val."""
     try:
         required = Version.parse(plugin_api_required)
         current = PLUGIN_API_VERSION
@@ -63,6 +75,7 @@ def check_plugin_compatibility(plugin_api_required: str) -> Tuple[bool, str]:
         return True, "Kompatibilis"
     except Exception as e:
         return False, f"Verzió parse hiba: {e}"
+
 
 def get_version_string():
     return f"{MAIN_VERSION} ({MAIN_CODENAME}) | Plugin API {PLUGIN_API_VERSION}"
