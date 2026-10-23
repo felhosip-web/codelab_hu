@@ -1,0 +1,12 @@
+{
+  "id": "graph_pack",
+  "name": "Gráf keresések csomag",
+  "version": "1.1.0",
+  "api_version_required": "1.0.0",
+  "plugins": [
+    "bfs",
+    "dfs",
+    "dijkstra",
+    "astar"
+  ]
+}
