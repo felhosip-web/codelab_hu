@@ -83,10 +83,22 @@ class APIManager:
         self.hooks: Dict[str, List[Callable]] = {}
         self.middlewares: List[Callable] = []
         self.feature_usage: Dict[str, int] = {}
+        self.hook_stats: Dict[str, int] = {}
         
         self.setup_default_features()
         self.setup_default_versions()
+        self.setup_default_hooks()
         self.load_config()
+
+    def setup_default_hooks(self):
+        def log_hook_call(hook_name, *args, **kwargs):
+            self.hook_stats[hook_name] = self.hook_stats.get(hook_name, 0) + 1
+            if self.config.enable_logging:
+                print(f"[APIManager Hook] {hook_name} (hívások: {self.hook_stats[hook_name]})")
+
+        self.register_hook("before_plugin_load", lambda **kw: log_hook_call("before_plugin_load", **kw))
+        self.register_hook("after_generate_steps", lambda **kw: log_hook_call("after_generate_steps", **kw))
+        self.register_hook("on_feature_toggle", lambda **kw: log_hook_call("on_feature_toggle", **kw))
     
     def setup_default_features(self):
         default_features = [
@@ -109,6 +121,7 @@ class APIManager:
             APIFeature("keybindings", True, "2.3.0", "Billentyűk", False, "", "", "low", False),
             APIFeature("playback", True, "2.1.0", "Lejátszás vezérlő", False, "", "", "low", False),
             APIFeature("menu", True, "2.2.0", "Menü rendszer", False, "", "", "low", False),
+            APIFeature("fourier", True, "1.0.0", "Fourier transzformációk", False, "", "", "medium", False),
             # Kísérleti
             APIFeature("ai_assistant", False, "2.5.0", "AI asszisztens", False, "", "", "high", True),
             APIFeature("cloud_sync", False, "2.5.0", "Felhő szinkron", False, "", "", "high", True),
@@ -131,7 +144,7 @@ class APIManager:
     
     def is_feature_enabled(self, feature_name: str) -> bool:
         if feature_name not in self.features:
-            return False
+            return True
         feat = self.features[feature_name]
         if feat.deprecated and not self.config.enable_deprecated:
             return False
@@ -143,10 +156,12 @@ class APIManager:
     def enable_feature(self, feature_name: str):
         if feature_name in self.features:
             self.features[feature_name].enabled = True
+            self.call_hook("on_feature_toggle", feature_name=feature_name, enabled=True)
     
     def disable_feature(self, feature_name: str):
         if feature_name in self.features:
             self.features[feature_name].enabled = False
+            self.call_hook("on_feature_toggle", feature_name=feature_name, enabled=False)
     
     def check_compatibility(self, plugin_api_version: str) -> tuple:
         """Returns (compatible, message, should_migrate)"""

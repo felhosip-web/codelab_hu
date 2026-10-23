@@ -146,7 +146,8 @@ class PerformanceMonitor:
         return {name: self.get_stats(name) for name in self.metrics}
 
 class Engine:
-    def __init__(self):
+    def __init__(self, api_manager=None):
+        self.api_manager = api_manager
         self.state_manager = StateManager()
         self.perf_monitor = PerformanceMonitor()
         self.current_plugin = None
@@ -154,23 +155,47 @@ class Engine:
         self.steps = []
         self.step_idx = 0
     def set_plugin(self, plugin, array=None):
-        self.perf_monitor.start("set_plugin")
+        if self.api_manager and not self.api_manager.is_feature_enabled("engine"):
+            raise RuntimeError("Engine feature is disabled in APIManager")
+
+        use_perf = self.api_manager.is_feature_enabled("performance_monitor") if self.api_manager else True
+        if use_perf:
+            self.perf_monitor.start("set_plugin")
+
         self.current_plugin = plugin
         if array is not None:
             self.current_array = array
-        state = self.state_manager.create_snapshot(
-            plugin_id=plugin.id, plugin_version=plugin.version, array=self.current_array,
-            step_idx=0, params=plugin.get_params().to_dict() if hasattr(plugin, 'get_params') and plugin.get_params() else {},
-            description=f"Plugin váltás: {plugin.name}", version=str(plugin.version))
-        self.state_manager.push_history(state)
-        self.perf_monitor.end("set_plugin")
+
+        use_state = self.api_manager.is_feature_enabled("state_manager") if self.api_manager else True
+        if use_state:
+            plugin_version = getattr(plugin, 'version', '1.0.0')
+            params = plugin.get_params().to_dict() if hasattr(plugin, 'get_params') and plugin.get_params() else {}
+            state = self.state_manager.create_snapshot(
+                plugin_id=plugin.id, plugin_version=plugin_version, array=self.current_array,
+                step_idx=0, params=params,
+                description=f"Plugin váltás: {getattr(plugin, 'name', plugin.id)}", version=str(plugin_version))
+            self.state_manager.push_history(state)
+
+        if use_perf:
+            self.perf_monitor.end("set_plugin")
+
     def generate_steps(self, input_data=None):
-        self.perf_monitor.start("generate_steps")
+        use_perf = self.api_manager.is_feature_enabled("performance_monitor") if self.api_manager else True
+        if use_perf:
+            self.perf_monitor.start("generate_steps")
+
         if input_data is None:
             input_data = self.current_array
+
         self.steps = list(self.current_plugin.get_steps(input_data))
         self.step_idx = 0
-        elapsed = self.perf_monitor.end("generate_steps")
+
+        if self.api_manager:
+            self.api_manager.call_hook("after_generate_steps", plugin=self.current_plugin, steps_count=len(self.steps))
+
+        elapsed = 0.0
+        if use_perf:
+            elapsed = self.perf_monitor.end("generate_steps")
         return elapsed
     def next_step(self):
         if self.step_idx < len(self.steps)-1:
