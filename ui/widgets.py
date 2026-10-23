@@ -14,7 +14,7 @@ class ArrayViewerWidget(QFrame):
         self.setStyleSheet("background: #fef9e7; border: 2px solid #2e86de; border-radius: 8px;")
         layout = QVBoxLayout(self)
         
-        title = QLabel(f"🟩 {UI_TEXTS['array_viewer']}")
+        self.title_label = QLabel(f"🟩 {UI_TEXTS['array_viewer']}")
         self.title_label.setStyleSheet("background: #2e86de; color: white; padding: 4px; font-weight: bold; border-radius: 4px;")
         layout.addWidget(self.title_label)
         
