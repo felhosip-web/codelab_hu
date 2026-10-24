@@ -2,17 +2,17 @@
 
 **Repozitórium:** felhosip-web/codelab_hu
 **Audit dátuma:** 2026. október 25.
-**Audit Típusa:** Kizárólagos Audit Jelentés Felülvizsgálata és Pontosítása (PR #8 Audit Report Validation)
+**Audit Típusa:** Kizárólagos Audit Jelentés Felülvizsgálata és Pontosítása (PR #8 Final Accuracy Review)
 
 ---
 
 ## 1. Audit Alapvonal (Audit Baseline)
 
-Az audit során az alábbi két commit határozottan elkülönítésre került:
+Az audit felülvizsgálata során az alábbi duplán ellenőrzött metaadatok érvényesek:
 
 - **Vizsgált forráskód alapvonal (Inspected Source Baseline):** `589a6dd6eb7d2419565973be1399a2d36fd4cbc7` (`origin/main`, Pull Request #7 merge commit)
-- **Audit jelentést tartalmazó PR HEAD commit:** `ba859f481b28517f26c068f451a1df5b432fbdcc` (A korábbi PR commit az audit riport dokumentációjával)
-- **Munkaterület állapota (Working-tree status):** Az audit felülvizsgálat során kizárólag az `AUDIT_REPORT.md` kerül frissítésre, az alkalmazás forráskódja, tesztjei és konfigurációi sértetlenek.
+- **A PR kiindulási HEAD commitja a feladat indításakor:** `bab1f321521dfbcc05d370e9343666f005469c37`
+- **Munkaterület állapota (Working-tree status):** Az audit során kizárólag az `AUDIT_REPORT.md` kerül frissítésre, az alkalmazás forráskódja, tesztjei és konfigurációi sértetlenek.
 - **Környezeti adatok az audit során:**
   - **Python verzió:** `Python 3.12.13`
   - **Operációs rendszer:** `Linux 6.8.0 x86_64` (Ubuntu / Debian sandbox)
@@ -48,10 +48,12 @@ A CodeLab HU egy moduláris, asztali GUI-ra (PySide6) és REST API-ra épülő a
 
 | Vizsgálat / Teszt | Parancs / Módszer | Megfigyelt Eredmény / Státusz |
 | :--- | :--- | :--- |
-| **Egységteszt csomag** | `python3 -m unittest discover -s tests -v` | **SIKERES** (43 teszt lefutott, 0 hiba, 0 bukás, futási idő: ~3.0 mp). |
+| **Egységteszt csomag** | `python3 -m unittest discover -s tests -v` | **SIKERES** (43 teszt lefutott, 0 hiba, 0 bukás, futási idő: ~3.5 mp). |
 | **Kód fordíthatóság** | `python3 -m compileall core plugins ui -q` | **SIKERES** (Minden szintaktikailag érvényes Python kód). |
 | **Plugin betöltés audit** | `PluginLoader.load_all()` | **SIKERES** (Mind az 57 plugin hiba nélkül betöltődött). |
-| **REST API szál-timeout teszt** | `_run_with_timeout` hívása végtelen ciklusra | **MERT BIZONYÍTÉK**: A függvény válaszolt a timeout-ra (408/500), de a Python `threading.Thread` szál tovább futott a háttérben. |
+| **Plugin szélsőérték tesztelése** | QuickSort, MergeSort, DFT, FFT hívása `[]`, `[5]`, `['a', 'b']` adatokkal | **SIKERES**: Nem dobott kivételt, érvényes lépéseket generált. |
+| **REST API szál-timeout teszt** | `_run_with_timeout` hívása végtelen ciklusra | **KÍSÉRLETI BIZONYÍTÉK**: A függvény válaszolt a timeout-ra (408/500), de a Python `threading.Thread` szál tovább futott a háttérben. |
+| **REST API memória korlát ellenőrzése** | `sandbox_max_memory_mb` keresése a kód útvonalain | **IBA**: A `sandbox_max_memory_mb` érték szerepel a konfigurációban (`core/rest_api.py:47`), de sehol sincs érvényesítve a kód végrehajtási útvonalán! |
 | **Licenc állományok összevetése** | `LICENSE` vs `LICENSE.txt` tartalmi összehasonlítás | **ELTÉRÉS / INKONZISZTENCIA** (`LICENSE`: MIT, `LICENSE.txt`: GPLv3 + HES kiegészítő feltételek). |
 | **GUI Vizuális ellenőrzés** | PySide6 hiányában a sandboxban | **NEM HAJTHATÓ VÉGRE** (Hiányzó PySide6 modul a környezetben). |
 
@@ -80,56 +82,55 @@ A `.github/workflows/ci.yml` fájl ellenőrzése alapján:
 #### `[SEC-01]` Medium — API Kulcsok Plaintext Tárolása JSON Fájlban
 - **Kategória:** Biztonság / Adatvédelem és tárolás
 - **Fájl és sorok:** `core/rest_api.py:321, 381-385`
-- **Igazolt tények:** A `/api/v2/keys` endpointon a kulcsgenerálás a `secrets.token_urlsafe(32)` függvényt használja (kriptografikusan biztonságos), és ellenőrzi az `admin` jogosultságot (`check_permission(key_obj, "admin")`). Az eredeti jelentésben szereplő állítások a gyenge kulcsgenerálásról és az autorizáció hiányáról **alaptalanok voltak és törlésre kerültek**. A valós megállapítás az, hogy az API kulcsokat a szerver nyílt szöveges JSON fájlban (`saves/api_keys.json`) tárolja lemezre (`asdict(v)`).
+- **Igazolt tények:** A `/api/v2/keys` endpointon a kulcsgenerálás a `secrets.token_urlsafe(32)` függvényt használja (kriptografikusan biztonságos), és ellenőrzi az `admin` jogosultságot (`check_permission(key_obj, "admin")`). Az API kulcsokat a szerver nyílt szöveges JSON fájlban (`saves/api_keys.json`) tárolja lemezre (`asdict(v)`).
 - **Fenyegetési modell és hatás:** Ha a szerver helyi fájlrendszere vagy a `saves/` mappa kikerül (pl. nem megfelelő jogosultságok, biztonsági mentés kiszivárgása vagy directory traversal sérülékenység miatt), az API kulcsok kiolvashatók.
-- **Súlyosság indoklása (Medium):** Helyi localhost használat és megfelelő fájlrendszer-jogosultságok esetén a közvetlen tetszőleges távoli hozzáférés nem lehetséges, így a kockázat nem Critical, hanem Medium.
-- **Javasolt javítás:** Az API kulcsok lemezen történő tárolásakor csak azok kriptográfiai hash-ét (pl. SHA-256) szabad elmenteni, és az ellenőrzést a bejövő kulcs hash-ének összevetésével kell végezni.
+- **Súlyosság indoklása (Medium):** Helyi localhost használat és megfelelő fájlrendszer-jogosultságok esetén a közvetlen tetszőleges távoli hozzáférés nem lehetséges.
+- **Javasolt fejlesztési opció:** Az API-kulcsok lemezen történő tárolásakor megfontolandó a kriptográfiai hash-elés (pl. SHA-256), szem előtt tartva az API-kulcsok egyszeri megtekintési folyamatát és visszavonási architektúráját.
 
-#### `[SEC-02]` Medium — Inkonzisztens CORS Válaszlécek Kezelése
+#### `[SEC-02]` Low — CORS Válaszlécek Összefűzési Formátumhibája
 - **Kategória:** Biztonság / Hálózati konfiguráció
 - **Fájl és sorok:** `core/rest_api.py:126-131, 192-194`
 - **Igazolt tények:** A `do_OPTIONS` és `send_json` metódusokban, ha a `enable_cors` engedélyezve van, a szerver az `Access-Control-Allow-Origin` fejléc értékeként a `', '.join(self.rest_config.cors_origins)` sztringet küldi vissza.
-- **Hatás:** A W3C CORS specifikáció szerint a böngészők nem fogadják el a vesszővel elválasztott origin listát a válaszfejlécben. Ez érvénytelen válaszléchez vezet a böngészőkben, így a konfigurált CORS nem működik megfelelően.
-- **Súlyosság indoklása (Medium):** Ez konfigurációs/kompatibilitási hiba, nem közvetlen biztonsági átlépési lehetőség (exploit).
-- **Javasolt javítás:** A bejövő `Origin` kérésfejlécet kell illeszteni az engedélyezett `cors_origins` listára, és a győztes match-et visszaadni az `Access-Control-Allow-Origin` fejlécben.
+- **Hatás:** A W3C CORS specifikáció szerint a böngészők nem fogadják el a vesszővel elválasztott origin listát a válaszfejlécben. Ez böngészőoldali konfigurációs és kompatibilitási hibát eredményez. Ez nem jelent autorizációs bypass-t!
+- **Súlyosság indoklása (Low):** Tényleges biztonsági átlépési lehetőséget nem biztosít, csupán böngészőoldali működési akadályt okoz a beállított origins esetén.
+- **Javasolt javítás:** A bejövő `Origin` kérésfejlécet illeszteni kell az engedélyezett `cors_origins` listára, és a győztes match-et kell visszaadni az `Access-Control-Allow-Origin` fejlécben.
 
-#### `[SEC-03]` High — Szál-szivárgás a REST API Sandbox Futtatásakor Timeout Eseten
-- **Kategória:** Biztonság / Erőforrás-kezelés és DoS kockázat
-- **Fájl és sorok:** `core/rest_api.py:69-87, 289-296`
-- **Igazolt tények:** A REST API a pluginok futtatását a `_run_with_timeout` segédfüggvényen keresztül végzi, amely egy Python `threading.Thread`-et indít el és `t.join(timeout)` hívással vár rá. A teszt igazolta, hogy ha a target függvény végtelen ciklust tartalmaz, a `t.join(timeout)` visszatér ugyan időtúllépéssel (408/500 HTTP válasz), de **a Python szál leállítatlanul tovább fut a háttérben**.
-- **Hatás és feltételek:** A Python GIL és a szál-szivárgás miatt, ha a felhasználó többször egymás után végtelen ciklust eredményező futtatási kérést küld (vagy nem megbízható plugin fut), a háttérszálak kimerítik a CPU-t és a memóriát.
-- **Súlyosság indoklása (High):** Bár az endpoint alapértelmezetten tiltva van és `execute` jogosultságot igényel, a "sandbox" elnevezés hamis biztonságérzetet kelt, miközben nem biztosít valódi folyamat-izolációt.
-- **Javasolt javítás:** A plugin-futtatást különálló folyamatban (`multiprocessing` vagy `subprocess`) kell végezni, amely időtúllépéskor `process.terminate()` vagy `process.kill()` segítségével garantáltan leállítható.
+#### `[SEC-03]` Medium / High Risk — Szál-szivárgás a REST API Sandbox Futtatásakor és Hiányzó Memórialimit
+- **Kategória:** Biztonság / Erőforrás-kezelés
+- **Fájl és sorok:** `core/rest_api.py:47, 69-87, 289-296`
+- **Igazolt tények:**
+  1. A REST API a pluginok futtatását a `_run_with_timeout` segédfüggvényen keresztül végzi (`threading.Thread` + `t.join(timeout)`). Teszteléssel igazolt, hogy végtelen ciklus esetén a HTTP kérés visszatér ugyan időtúllépéssel, de **a háttérszál leállítatlanul fut tovább**. A feltételes DoS (erőforrás-kimerítés) ismételt hibás kérések esetén lehetséges kockázatként értékelendő.
+  2. A `RESTConfig` osztályban definiált `sandbox_max_memory_mb: int = 50` beállítás **sehol sincs érvényesítve a végrehajtási útvonalon**.
+- **Súlyosság indoklása (Medium / High Risk):** Bár az endpoint alapértelmezetten tiltva van és `execute` jogosultságot igényel, a "sandbox" elnevezés hamis biztonságérzetet kelt.
+- **Javasolt javítás:** Folyamat-alapú futtatásra (`multiprocessing` vagy `subprocess`) való áttérés, amellyel az időtúllépéskor a munkamenet garantáltan megszakítható (`process.terminate()`), és a memórialimit is kikényszeríthető.
 
-#### `[SEC-04]` Low / Informational — IP-cím Ellenőrzés Direct-Server Kontextusban
+#### `[SEC-04]` Informational — IP-cím Ellenőrzés Direct-Server Kontextusban
 - **Kategória:** Biztonság / Hozzáférés-vezérlés
 - **Fájl és sorok:** `core/rest_api.py:137-140`
-- **Igazolt tények:** Az IP-cím ellenőrzése a `self.client_address[0]` alapján történik. Direct-serverként (localhoston) ez teljesen megfelelően működik. Fordított proxy (reverse proxy) mögé helyezés esetén az `X-Forwarded-For` fejléc hiánya miatt minden kérés `127.0.0.1`-nek látszódhat.
-- **Súlyosság indoklása (Informational / Low):** Alapértelmezett stand-alone futtatásnál a jelenlegi logika helyes. Kiemelendő dokumentációs szempontként proxy mögötti telepítésekhez.
+- **Igazolt tények:** Az IP-cím ellenőrzése a `self.client_address[0]` alapján történik. Direct-serverként (localhoston) ez teljesen megfelelően működik. Reverse proxy mögötti telepítésnél dokumentációs megjegyzést igényel.
 
 ---
 
 ### B. Végrehajtó Motor És Algoritmus Megállapítások (Engine & Plugins)
 
-#### `[ENG-01]` Informational / Design Question — Lépés-indexelési Logika és Kezdőállapot Kezelés
+#### `[ENG-01]` Informational / Architecture Design — Lépés-indexelési Logika és Kezdőállapot Kezelés
 - **Kategória:** Architektúra / Kezdőállapot felépítés
 - **Fájl és sorok:** `core/engine.py:206-250`
 - **Igazolt tények:** A `generate_steps()` hívása után a `self.step_idx` értéke `0`. Az `Engine.next_step()` hívásakor az index `1`-re nő (`self.step_idx += 1`), és a 1-es indexű lépést adja vissza.
-- **Működési kontextus és UI elemzés:** A GUI `MainWindow.sync_from_engine()` és `reset()` metódusai a `generate_steps()` után a `self.engine.steps[0]` lépést jelenítik meg mint **kezdőállapotot** (0. lépés - pl. a rendezetlen tömb beállítása). Amikor a felhasználó először rákatint az "Előre" (Next) gombra, a `next_step()` a 1-es indexű transzformációs lépést adja vissza.
-- **Összegzés és Súlyosság (Informational):** Az eredeti audit állításával ellentétben **a 0. lépés nem veszik el**, hanem a kezdőállapotot képviseli az UI-ban. Ez az architektúra szándékos tervezési döntése. Amennyiben az API használat során az első transzformációt szeretnénk lekérni, a 0. lépés a kiinduló állapot.
+- **Működési kontextus és UI elemzés:** A GUI `MainWindow.sync_from_engine()` és `reset()` metódusai a `generate_steps()` után a `self.engine.steps[0]` lépést jelenítik meg mint **kezdőállapotot** (0. lépés - pl. a rendezetlen tömb beállítása). Az "Előre" gomb megnyomásakor a `next_step()` a 1-es indexű transzformációt adja vissza.
+- **Összegzés és Súlyosság (Informational):** A 0. lépés nem veszik el, hanem a kezdőállapotot képviseli az UI-ban. Ez az architektúra szándékos tervezési döntése.
 
-#### `[ENG-02]` Medium — Inkonzisztens Plugin Állapot Munkamenet Betöltésekor (`load_state`)
-- **Kategória:** Állapotkezelés / Ismételhetőség
-- **Fájl és sorok:** `core/engine.py:280-300`
-- **Igazolt tények:** A `load_state()` metódus betölti a fájlból az elmentett tömböt (`self.current_array = state.array`), majd meghívja a `_sync_steps_after_state_change(state.current_step_idx)`-et. Ha a betöltött fájlban szereplő `plugin_id` eltér az aktuálisan beállított `current_plugin.id`-tól, az engine beállítja a `state.plugin_mismatch = True` flag-et, de **nem váltja át automatikusan a plugint**.
-- **Hatás:** Amennyiben a hívó nem kezeli a `plugin_mismatch` flag-et, az új tömbre a korábbi plugin algoritmusa fut le.
-- **Javasolt javítás:** A `load_state()` esetén, ha `plugin_loader` elérhető, az engine automatikusan töltse be a mentésben szereplő plugint.
+#### `[ENG-02]` Informational / User Warning — Munkamenet Betöltési Logika (`load_state`)
+- **Kategória:** Állapotkezelés / UI jelzés
+- **Fájl és sorok:** `core/engine.py:280-300`, `ui/state_manager_dialog.py:105-112`
+- **Igazolt tények:** A `load_state()` metódus betölti a mentett tömböt, és ha a mentésben lévő `plugin_id` eltér a jelenlegitől, beállítja a `state.plugin_mismatch = True` flag-et. A `StateManagerDialog.on_load` metódus ezt a flag-et ellenőrzi, és kifejezett figyelmeztető üzenetet mutat a felhasználónak: *"Figyelem: A mentett plugin eltér a jelenlegi plugintól!"*.
+- **Súlyosság (Informational):** A rendszer nem folytatja csendben a működést, hanem értesíti a felhasználót. Ennek felülbírálása vagy az automatikus plugin-váltás bevezetése terméktervezési döntés.
 
-#### `[PLG-01]` Low / Coverage Gap — Szélsőérték-kezelés Hiánya Egyes Pluginokban
-- **Kategória:** Bemenet-kezelés / Tesztlefedettség
+#### `[PLG-01]` Informational / Coverage Gap — Algoritmus Pluginok Szélsőérték Tesztelése
+- **Kategória:** Tesztlefedettség
 - **Fájl és sorok:** `plugins/quick/plugin.py`, `plugins/merge/plugin.py`, `plugins/fourier/plugin.py`
-- **Igazolt tények:** Az algoritmus-pluginok többsége feltételezi a legalább 1 vagy 2 elemet tartalmazó számtömböket. Üres tömb (`[]`) átadásakor egyes rekurzív vagy indexelő algoritmusok (pl. Quick Sort, Merge Sort) szélősérték-hibát vagy üres generátort adnak vissza.
-- **Súlyosság (Low):** Az UI réteg (`input_parser.py`) érvényesíti és korlátozza a bemeneteket, így a GUI felől nem érkezik malformed tömb. A pluginok közvetlen API hívásánál azonban hasznos a védelmi ellenőrzés.
+- **Igazolt tények:** A QuickSort, MergeSort, DFT és FFT pluginok lefutottak üres (`[]`), egyelemes (`[5]`), érvényes számsorozatokra és nem-szám típusokra (`['a', 'b']`) is anélkül, hogy nem kezelt kivételt dobtak volna.
+- **Súlyosság (Informational):** Concrete hiba nem volt reprodukálható. Ajánlott további automata szélsőérték-tesztek írása.
 
 ---
 
@@ -153,8 +154,8 @@ A `.github/workflows/ci.yml` fájl ellenőrzése alapján:
 | **Hálózati Kitettség** | Alapértelmezetten `127.0.0.1:8000`, nem publikus. | Alacsony |
 | **API Kulcs Kezelés** | Plaintext tárolás JSON fájlban (`api_keys.json`). | **Medium** |
 | **Jogosultság-ellenőrzés** | Admin és X-API-Key ellenőrzés rendben működik. | Rendben |
-| **CORS Konfiguráció** | Vesszővel elválasztott origin lécek összefűzése. | **Medium** |
-| **Sandbox & Izoláció** | Python szálalapú "timeout" nem állítja le a háttérszálat. | **High** |
+| **CORS Konfiguráció** | Vesszővel elválasztott origin lécek összefűzése (W3C hiba). | **Low** |
+| **Sandbox & Izoláció** | Python szálalapú "timeout" nem állítja le a háttérszálat; nem érvényesített memórialimit. | **Medium / High Risk** |
 | **Rate Limiting** | Memóriabeli csúsztatott ablak működik. | Alacsony |
 
 ---
@@ -162,20 +163,19 @@ A `.github/workflows/ci.yml` fájl ellenőrzése alapján:
 ## 7. Tesztelési És Ellenőrzési Lefedettségi Hiányok
 
 1. **GUI Vizualizációs Tesztelés:** A PySide6 hiánya miatt a tesztkörnyezetben a Qt felületi komponensek nem tölthetők be.
-2. **Plugin Algoritmikus Egységtesztek:** A 43 meglévő egységteszt az alapvető keretrendszert és 3-4 kiválasztott plugint tesztel. A többi pluginhoz szélsőérték-tesztek (üres tömb, egyelemes tömb) hozzáadása javasolt.
+2. **Plugin Algoritmikus Egységtesztek:** A 43 meglévő egységteszt az alapvető keretrendszert és 3-4 kiválasztott plugint tesztel. A többi pluginra automata egységtesztek írása javasolt.
 
 ---
 
 ## 8. Prioritásos Remediációs Ütemterv (Roadmap)
 
 ### P0 — Kritikus Biztonsági És Stabilitási Fejlesztések
-1. **`[SEC-03]` Sandbox Átalakítása Folyamat-Alapúra:** A szálalapú timeout cseréje `multiprocessing.Process` vagy `subprocess` futtatásra a REST API `/api/v2/run` endpointjában a garantált leállíthatóság érdekében.
+1. **`[SEC-03]` Sandbox Átalakítása Folyamat-Alapúra:** A szálalapú timeout cseréje `multiprocessing.Process` vagy `subprocess` futtatásra a REST API `/api/v2/run` endpointjában a garantált leállíthatóság és memórialimit érvényesítés érdekében.
 
 ### P1 — Fontos Működési És Architekturális Helyreállítások
-1. **`[SEC-01]` API Kulcs Hash-elés:** SHA-256 hash alapon történő mentés e-mail/JSON fájlba íráskor.
+1. **`[SEC-01]` API Kulcs Hash-elési Opció:** SHA-256 hash alapon történő mentés megfontolása lemezes JSON fájlba íráskor.
 2. **`[SEC-02]` CORS Válaszlécek Javítása:** Pontos Origin-illesztés implementálása.
-3. **`[ENG-02]` Munkamenet Betöltési Logika Továbbfejlesztése:** Betöltéskor automatikus plugin-váltás biztosítása.
-4. **`[LIC-01]` Licenc Fájlok Egységesítése:** A maintainerek döntése alapján a `LICENSE` és `LICENSE.txt` közötti eltérés megszüntetése.
+3. **`[LIC-01]` Licenc Fájlok Egységesítése:** A maintainerek döntése alapján a `LICENSE` és `LICENSE.txt` közötti eltérés megszüntetése.
 
 ### P2 — Karbantarthatóság És Tesztlefedettség Növelése
 1. **Automata Tesztek Bővítése:** Szélsőérték-tesztek írása az algoritmus-pluginokhoz.
@@ -195,8 +195,8 @@ A `.github/workflows/ci.yml` fájl ellenőrzése alapján:
 A CodeLab HU repozitórium **architektúrája moduláris, átgondolt és jól strukturált**. A meglévő 43 egységteszt sikeresen lefut.
 
 A projekt **célzott stabilizálást igényel (Targeted Stabilization First)**:
-1. A REST API sandbox szál-szivárgásának megszüntetése folyamat-izolációval (P0).
-2. Az API kulcsok hash-elt tárolása és a CORS válaszlécek javítása (P1).
+1. A REST API sandbox szál-szivárgásának megszüntetése és a memórialimit érvényesítése folyamat-izolációval (P0).
+2. Az API kulcsok hash-elt tárolási opciója és a CORS válaszlécek javítása (P1).
 3. A licencfájlok egységesítése a maintainerek által (P1).
 
 A repozitórium nem igényel teljes újraírást, a megjelölt P0/P1 pontok javításával a szoftver stabil és biztonságos állapotba hozható.
