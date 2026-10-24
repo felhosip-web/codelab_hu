@@ -130,23 +130,32 @@ class Trie:
             return x_offset
         assign(self.root, 0, 0)
 
-class StructureStep:
+from core.step import VisualizationStep
+
+class StructureStep(VisualizationStep):
     def __init__(self, structure, current_value=None, highlight_nodes=None, 
                  code_line=0, explanation="", comparisons=0, extra=None, path=None):
-        self.structure = structure
-        self.current_value = current_value
-        self.highlight_nodes = highlight_nodes or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.path = path or []
-        self.array = []
-        self.key = current_value
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
+        e_dict = extra.copy() if extra else {}
+        if structure is not None and "structure" not in e_dict:
+            e_dict["structure"] = structure
+        if current_value is not None and "current_value" not in e_dict:
+            e_dict["current_value"] = current_value
+        if highlight_nodes is not None:
+            e_dict["highlight_nodes"] = highlight_nodes
+        elif "highlight_nodes" not in e_dict:
+            e_dict["highlight_nodes"] = []
+        if path is not None:
+            e_dict["path"] = path
+        elif "path" not in e_dict:
+            e_dict["path"] = []
+
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            key=current_value,
+            extra=e_dict
+        )
 
 class BTreePlugin(AlgorithmPluginBase):
     id = "btree"

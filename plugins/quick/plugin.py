@@ -2,21 +2,7 @@
 from typing import List
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
-
-class SortStep:
-    def __init__(self, array: List[int], key=None, sorted_end=0, 
-                 highlight_indices=None, code_line=0, explanation="", 
-                 comparisons=0, shifts=0, pass_num=0, extra=None):
-        self.array = array.copy()
-        self.key = key
-        self.sorted_end = sorted_end
-        self.highlight = highlight_indices or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.shifts = shifts
-        self.pass_num = pass_num
-        self.extra = extra or {}  # QT extrák: pivot, low, high, recursion_stack
+from core.step import VisualizationStep
 
 class QuickSortPlugin(AlgorithmPluginBase):
     id = "quick_sort"
@@ -171,11 +157,12 @@ end;"""
         comparisons = 0
         swaps = 0
         
-        # Kezdés
-        yield SortStep(a, key=None, sorted_end=-1, code_line=1,
-                       explanation="⚡ Gyors rendezés kezdés: oszd meg és uralkodj!",
-                       comparisons=0, shifts=0, pass_num=0,
-                       extra={"recursion": [(0, len(a)-1)], "pivot": None})
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=-1, code_line=1,
+            explanation="⚡ Gyors rendezés kezdés: oszd meg és uralkodj!",
+            metrics={"comparisons": 0, "swaps": 0, "pass_num": 0},
+            extra={"recursion": [(0, len(a)-1)], "pivot": None}
+        )
         
         stack = [(0, len(a)-1, 0)]  # (low, high, depth)
         
@@ -185,49 +172,56 @@ end;"""
             if low >= high:
                 continue
             
-            # Particionálás bemutatása
             pivot = a[high]
-            yield SortStep(a, key=pivot, sorted_end=-1, highlight_indices=[high], code_line=11,
-                           explanation=f"Pivot választás: a[{high}]={pivot} (depth {depth})",
-                           comparisons=comparisons, shifts=swaps, pass_num=depth,
-                           extra={"pivot": high, "low": low, "high": high, "recursion": [(l,h) for l,h,_ in stack] + [(low, high)]})
+            yield VisualizationStep(
+                array=a, key=pivot, sorted_end=-1, highlight=[high], code_line=12,
+                explanation=f"Pivot választás: a[{high}]={pivot} (depth {depth})",
+                metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": depth},
+                extra={"pivot": high, "low": low, "high": high, "recursion": [(l,h) for l,h,_ in stack] + [(low, high)]}
+            )
             
             i = low - 1
             for j in range(low, high):
                 comparisons += 1
-                yield SortStep(a, key=pivot, sorted_end=-1, highlight_indices=[j, high], code_line=13,
-                               explanation=f"Vizsgál: a[{j}]={a[j]} <= pivot {pivot}? (i={i})",
-                               comparisons=comparisons, shifts=swaps, pass_num=depth,
-                               extra={"pivot": high, "low": low, "high": high, "i": i, "j": j, "recursion": [(l,h) for l,h,_ in stack]})
+                yield VisualizationStep(
+                    array=a, key=pivot, sorted_end=-1, highlight=[j, high], code_line=15,
+                    explanation=f"Vizsgál: a[{j}]={a[j]} <= pivot {pivot}? (i={i})",
+                    metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": depth},
+                    extra={"pivot": high, "low": low, "high": high, "i": i, "j": j, "recursion": [(l,h) for l,h,_ in stack]}
+                )
                 
                 if a[j] <= pivot:
                     i += 1
                     if i != j:
                         a[i], a[j] = a[j], a[i]
                         swaps += 1
-                        yield SortStep(a, key=pivot, sorted_end=-1, highlight_indices=[i, j], code_line=15,
-                                       explanation=f"Csere: a[{i}]↔a[{j}], i={i} növelve",
-                                       comparisons=comparisons, shifts=swaps, pass_num=depth,
-                                       extra={"pivot": high, "low": low, "high": high, "i": i, "j": j, "recursion": [(l,h) for l,h,_ in stack]})
+                        yield VisualizationStep(
+                            array=a, key=pivot, sorted_end=-1, highlight=[i, j], code_line=17,
+                            explanation=f"Csere: a[{i}]↔a[{j}], i={i} növelve",
+                            metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": depth},
+                            extra={"pivot": high, "low": low, "high": high, "i": i, "j": j, "recursion": [(l,h) for l,h,_ in stack]}
+                        )
             
-            # Pivot végső helyére
             a[i+1], a[high] = a[high], a[i+1]
             swaps += 1
             pi = i+1
             
-            yield SortStep(a, key=None, sorted_end=-1, highlight_indices=[pi], code_line=17,
-                           explanation=f"✅ Pivot a helyén: index {pi}, érték {a[pi]}. Két részre bontunk.",
-                           comparisons=comparisons, shifts=swaps, pass_num=depth,
-                           extra={"pivot": pi, "low": low, "high": high, "partition": pi, "recursion": [(l,h) for l,h,_ in stack] + [(low, pi-1), (pi+1, high)]})
+            yield VisualizationStep(
+                array=a, key=None, sorted_end=-1, highlight=[pi], code_line=18,
+                explanation=f"✅ Pivot a helyén: index {pi}, érték {a[pi]}. Két részre bontunk.",
+                metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": depth},
+                extra={"pivot": pi, "low": low, "high": high, "partition": pi, "recursion": [(l,h) for l,h,_ in stack] + [(low, pi-1), (pi+1, high)]}
+            )
             
-            # Rekurzió - verem (jobb oldal előbb, hogy bal legyen felül)
             stack.append((pi+1, high, depth+1))
             stack.append((low, pi-1, depth+1))
         
-        yield SortStep(a, key=None, sorted_end=len(a)-1, highlight_indices=[], code_line=20,
-                       explanation="✅ Kész! Minden partíció rendezve.",
-                       comparisons=comparisons, shifts=swaps, pass_num=0,
-                       extra={"recursion": [], "pivot": None})
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=len(a)-1, highlight=[], code_line=19,
+            explanation="✅ Kész! Minden partíció rendezve.",
+            metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": 0},
+            extra={"recursion": [], "pivot": None}
+        )
     
     def get_code(self, language: str) -> str:
         return self.codes.get(language, self.codes["Python"])

@@ -1,25 +1,27 @@
 # -*- coding: utf-8 -*-
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 import math
 
-class WowStep:
+class WowStep(VisualizationStep):
     def __init__(self, value=None, array=None, binary=None, nodes=None, pattern=None, extra_data=None, code_line=0, explanation="", comparisons=0, extra=None):
-        self.value = value
-        self.array = array or []
-        self.binary = binary or ""
-        self.nodes = nodes or []
-        self.pattern = pattern or []
-        self.extra_data = extra_data or {}
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.key = value
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
+        arr = array or []
+        e_dict = extra.copy() if extra else {}
+        if extra_data:
+            e_dict.update(extra_data)
+        e_dict.update({
+            "value": value, "binary": binary or "",
+            "nodes": nodes or [], "pattern": pattern or []
+        })
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            array=arr,
+            key=value,
+            extra=e_dict
+        )
 
 class BinaryBitsPlugin(AlgorithmPluginBase):
     id = "binary_bits"

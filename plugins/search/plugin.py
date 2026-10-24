@@ -2,24 +2,8 @@
 from typing import List
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 import random
-
-class SearchStep:
-    def __init__(self, array: List[int], target: int, highlight_indices=None, 
-                 code_line=0, explanation="", comparisons=0, found_index=None, extra=None):
-        self.array = array.copy()
-        self.target = target
-        self.highlight = highlight_indices or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.found_index = found_index
-        self.extra = extra or {}
-        # Kompatibilitás a sort rendszerrel
-        self.key = target
-        self.sorted_end = -1
-        self.shifts = 0
-        self.pass_num = comparisons
 
 class LinearSearchPlugin(AlgorithmPluginBase):
     id = "linear_search"
@@ -97,35 +81,39 @@ end;"""
     }
     
     def get_steps(self, arr):
-        # Kereséshez rendezett tömb és cél kell
-        a = sorted(arr)  # Kereséshez jobb ha rendezett, de lineárisnál mindegy
-        target = a[len(a)//2] if len(a)>0 else 0  # Középső elemet keressük példaként
-        # Vagy random cél
-        import random
+        a = sorted(arr)
         target = random.choice(a) if a else 0
         
-        yield SearchStep(a, target, highlight_indices=[], code_line=1,
-                         explanation=f"🔍 Lineáris keresés: {target} keresése",
-                         comparisons=0, found_index=None,
-                         extra={"target": target})
+        yield VisualizationStep(
+            array=a, key=target, sorted_end=-1, highlight=[], code_line=1,
+            explanation=f"🔍 Lineáris keresés: {target} keresése",
+            metrics={"comparisons": 0, "pass_num": 0},
+            extra={"target": target}
+        )
         
         for i in range(len(a)):
-            yield SearchStep(a, target, highlight_indices=[i], code_line=3,
-                             explanation=f"Vizsgál: a[{i}]={a[i]} == {target}?",
-                             comparisons=i+1, found_index=None,
-                             extra={"target": target, "current": i, "low": 0, "high": len(a)-1})
+            yield VisualizationStep(
+                array=a, key=target, sorted_end=-1, highlight=[i], code_line=4,
+                explanation=f"Vizsgál: a[{i}]={a[i]} == {target}?",
+                metrics={"comparisons": i+1, "pass_num": i+1},
+                extra={"target": target, "current": i, "low": 0, "high": len(a)-1}
+            )
             
             if a[i] == target:
-                yield SearchStep(a, target, highlight_indices=[i], code_line=4,
-                                 explanation=f"✅ Megtalálva! Index: {i}",
-                                 comparisons=i+1, found_index=i,
-                                 extra={"target": target, "found": i})
+                yield VisualizationStep(
+                    array=a, key=target, sorted_end=-1, highlight=[i], code_line=5,
+                    explanation=f"✅ Megtalálva! Index: {i}",
+                    metrics={"comparisons": i+1, "pass_num": i+1},
+                    extra={"target": target, "found": i}
+                )
                 return
         
-        yield SearchStep(a, target, highlight_indices=[], code_line=6,
-                         explanation=f"❌ Nincs találat: {target} nincs a tömbben",
-                         comparisons=len(a), found_index=-1,
-                         extra={"target": target})
+        yield VisualizationStep(
+            array=a, key=target, sorted_end=-1, highlight=[], code_line=6,
+            explanation=f"❌ Nincs találat: {target} nincs a tömbben",
+            metrics={"comparisons": len(a), "pass_num": len(a)},
+            extra={"target": target}
+        )
     
     def get_code(self, language: str) -> str:
         return self.codes.get(language, self.codes["Python"])
@@ -228,49 +216,59 @@ end;"""
     
     def get_steps(self, arr):
         a = sorted(arr)
-        import random
         target = random.choice(a) if a else 0
-        
         low, high = 0, len(a)-1
         comparisons = 0
         
-        yield SearchStep(a, target, highlight_indices=[], code_line=2,
-                         explanation=f"🎯 Bináris keresés: {target} keresése rendezett tömbben",
-                         comparisons=0, found_index=None,
-                         extra={"target": target, "low": low, "high": high, "recursion": [(low, high)]})
+        yield VisualizationStep(
+            array=a, key=target, sorted_end=-1, highlight=[], code_line=3,
+            explanation=f"🎯 Bináris keresés: {target} keresése rendezett tömbben",
+            metrics={"comparisons": 0, "pass_num": 0},
+            extra={"target": target, "low": low, "high": high, "recursion": [(low, high)]}
+        )
         
         while low <= high:
             mid = (low + high)//2
-            comparisons+=1
+            comparisons += 1
             
-            yield SearchStep(a, target, highlight_indices=[mid], code_line=4,
-                             explanation=f"Felezés: low={low}, high={high}, mid={mid} (a[mid]={a[mid]})",
-                             comparisons=comparisons, found_index=None,
-                             extra={"target": target, "low": low, "high": high, "mid": mid, "recursion": [(low, high)]})
+            yield VisualizationStep(
+                array=a, key=target, sorted_end=-1, highlight=[mid], code_line=6,
+                explanation=f"Felezés: low={low}, high={high}, mid={mid} (a[mid]={a[mid]})",
+                metrics={"comparisons": comparisons, "pass_num": comparisons},
+                extra={"target": target, "low": low, "high": high, "mid": mid, "recursion": [(low, high)]}
+            )
             
             if a[mid] == target:
-                yield SearchStep(a, target, highlight_indices=[mid], code_line=6,
-                                 explanation=f"✅ Megtalálva! a[{mid}]={target}",
-                                 comparisons=comparisons, found_index=mid,
-                                 extra={"target": target, "low": low, "high": high, "mid": mid, "found": mid})
+                yield VisualizationStep(
+                    array=a, key=target, sorted_end=-1, highlight=[mid], code_line=7,
+                    explanation=f"✅ Megtalálva! a[{mid}]={target}",
+                    metrics={"comparisons": comparisons, "pass_num": comparisons},
+                    extra={"target": target, "low": low, "high": high, "mid": mid, "found": mid}
+                )
                 return
             elif a[mid] < target:
-                yield SearchStep(a, target, highlight_indices=list(range(mid+1, high+1)), code_line=8,
-                                 explanation=f"{a[mid]} < {target}, jobbra megyünk",
-                                 comparisons=comparisons, found_index=None,
-                                 extra={"target": target, "low": mid+1, "high": high, "mid": mid})
+                yield VisualizationStep(
+                    array=a, key=target, sorted_end=-1, highlight=list(range(mid+1, high+1)), code_line=9,
+                    explanation=f"{a[mid]} < {target}, jobbra megyünk",
+                    metrics={"comparisons": comparisons, "pass_num": comparisons},
+                    extra={"target": target, "low": mid+1, "high": high, "mid": mid}
+                )
                 low = mid + 1
             else:
-                yield SearchStep(a, target, highlight_indices=list(range(low, mid)), code_line=10,
-                                 explanation=f"{a[mid]} > {target}, balra megyünk",
-                                 comparisons=comparisons, found_index=None,
-                                 extra={"target": target, "low": low, "high": mid-1, "mid": mid})
+                yield VisualizationStep(
+                    array=a, key=target, sorted_end=-1, highlight=list(range(low, mid)), code_line=11,
+                    explanation=f"{a[mid]} > {target}, balra megyünk",
+                    metrics={"comparisons": comparisons, "pass_num": comparisons},
+                    extra={"target": target, "low": low, "high": mid-1, "mid": mid}
+                )
                 high = mid - 1
         
-        yield SearchStep(a, target, highlight_indices=[], code_line=11,
-                         explanation=f"❌ Nincs találat: {target}",
-                         comparisons=comparisons, found_index=-1,
-                         extra={"target": target})
+        yield VisualizationStep(
+            array=a, key=target, sorted_end=-1, highlight=[], code_line=12,
+            explanation=f"❌ Nincs találat: {target}",
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            extra={"target": target}
+        )
     
     def get_code(self, language: str) -> str:
         return self.codes.get(language, self.codes["Python"])

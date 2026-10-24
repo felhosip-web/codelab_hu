@@ -1,30 +1,39 @@
 # -*- coding: utf-8 -*-
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 from core.fifo_lifo import Stack, Queue, Deque, CircularQueue, PriorityQueue
 import random
 
-class FIFOStep:
+class FIFOStep(VisualizationStep):
     def __init__(self, structure=None, structure_type="stack", operation="", value=None,
                  top=None, front=None, rear=None,
                  code_line=0, explanation="", comparisons=0, extra=None):
-        self.structure = structure
-        self.structure_type = structure_type
-        self.operation = operation
-        self.value = value
-        self.top = top
-        self.front = front
-        self.rear = rear
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.array = structure if isinstance(structure, list) else []
-        self.key = value
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
+        extra_dict = extra.copy() if extra else {}
+        if structure is not None and "structure" not in extra_dict:
+            extra_dict["structure"] = structure
+        if structure_type and "structure_type" not in extra_dict:
+            extra_dict["structure_type"] = structure_type
+        if operation and "operation" not in extra_dict:
+            extra_dict["operation"] = operation
+        if value is not None and "value" not in extra_dict:
+            extra_dict["value"] = value
+        if top is not None and "top" not in extra_dict:
+            extra_dict["top"] = top
+        if front is not None and "front" not in extra_dict:
+            extra_dict["front"] = front
+        if rear is not None and "rear" not in extra_dict:
+            extra_dict["rear"] = rear
+
+        arr = structure if isinstance(structure, list) else []
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            array=arr,
+            key=value,
+            extra=extra_dict
+        )
 
 class StackPlugin(AlgorithmPluginBase):
     id = "stack"

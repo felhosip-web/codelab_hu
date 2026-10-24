@@ -2,34 +2,26 @@
 from typing import List
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 from core.encoding import HuffmanCoding, RLE, CaesarCipher, Base64Codec, LZWCodec
 
-class EncodingStep:
+class EncodingStep(VisualizationStep):
     def __init__(self, text="", encoded="", decoded="", current_char=None,
                  codes=None, tree=None, freq=None,
                  highlight_text=None, highlight_encoded=None,
                  code_line=0, explanation="", comparisons=0, extra=None):
-        self.text = text
-        self.encoded = encoded
-        self.decoded = decoded
-        self.current_char = current_char
-        self.codes = codes or {}
-        self.tree = tree
-        self.freq = freq or {}
-        self.highlight_text = highlight_text or []
-        self.highlight_encoded = highlight_encoded or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        # Kompat
-        self.array = []
-        self.key = None
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
-        self.structure = tree
+        e_dict = extra.copy() if extra else {}
+        e_dict.update({
+            "text": text, "encoded": encoded, "decoded": decoded, "current_char": current_char,
+            "codes": codes or {}, "tree": tree, "freq": freq or {},
+            "highlight_text": highlight_text or [], "highlight_encoded": highlight_encoded or []
+        })
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            extra=e_dict
+        )
 
 class HuffmanPlugin(AlgorithmPluginBase):
     id = "huffman"

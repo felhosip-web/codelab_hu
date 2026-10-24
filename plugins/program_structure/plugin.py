@@ -1,23 +1,23 @@
 # -*- coding: utf-8 -*-
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 
-class StructStep:
+class StructStep(VisualizationStep):
     def __init__(self, value=None, array=None, structure=None, current_line=None, variables=None, code_line=0, explanation="", comparisons=0, extra=None):
-        self.value = value
-        self.array = array or []
-        self.structure = structure or ""
-        self.current_line = current_line
-        self.variables = variables or {}
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.key = value
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
+        e_dict = extra.copy() if extra else {}
+        e_dict.update({
+            "value": value, "structure": structure or "",
+            "current_line": current_line, "variables": variables or {}
+        })
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            array=array or [],
+            key=value,
+            extra=e_dict
+        )
 
 class VariablesPlugin(AlgorithmPluginBase):
     id = "variables"

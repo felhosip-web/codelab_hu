@@ -3,26 +3,13 @@
 Példa - hogyan csinálj új plugin-t?
 Másold le ezt a mappát és nevezd át pl. quick-re, és írd át a kódot.
 
-Ez a teljes buborék rendezés plugin 1 fájlban volt, most ez a sablon mutatja
-hogy milyen egyszerű újat csinálni.
+Ez a teljes sablon mutatja, hogy milyen egyszerű újat csinálni.
 """
-# A plugins/quick/plugin.py így nézne ki:
+# A plugin így nézne ki:
 
 TEMPLATE = """
 from core.plugin_system import AlgorithmPluginBase
-
-class SortStep:
-    def __init__(self, array, key=None, sorted_end=0, highlight_indices=None, 
-                 code_line=0, explanation="", comparisons=0, shifts=0, pass_num=0):
-        self.array = array.copy()
-        self.key = key
-        self.sorted_end = sorted_end
-        self.highlight = highlight_indices or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.shifts = shifts
-        self.pass_num = pass_num
+from core.step import VisualizationStep
 
 class MyNewSortPlugin(AlgorithmPluginBase):
     id = "my_sort"
@@ -39,7 +26,7 @@ class MyNewSortPlugin(AlgorithmPluginBase):
     }
     
     def get_steps(self, arr):
-        # yield SortStep(...)
+        # yield VisualizationStep(...)
         pass
     
     def get_code(self, lang):

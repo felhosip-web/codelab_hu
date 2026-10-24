@@ -1,30 +1,41 @@
 # -*- coding: utf-8 -*-
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 from core.enigma import EnigmaMachine, ALPHABET, ROTOR_WIRINGS
 
-class EnigmaStep:
+class EnigmaStep(VisualizationStep):
     def __init__(self, text="", encoded="", current_char=None, encoded_char=None,
                  rotor_positions=None, path=None, plugboard=None,
                  code_line=0, explanation="", comparisons=0, extra=None):
-        self.text = text
-        self.encoded = encoded
-        self.current_char = current_char
-        self.encoded_char = encoded_char
-        self.rotor_positions = rotor_positions or []
-        self.path = path or []
-        self.plugboard = plugboard
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.array = []
-        self.key = None
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
-        self.structure = None
+        e_dict = extra.copy() if extra else {}
+        if text and "text" not in e_dict:
+            e_dict["text"] = text
+        if encoded and "encoded" not in e_dict:
+            e_dict["encoded"] = encoded
+        if current_char is not None and "current_char" not in e_dict:
+            e_dict["current_char"] = current_char
+        if encoded_char is not None and "encoded_char" not in e_dict:
+            e_dict["encoded_char"] = encoded_char
+        if rotor_positions is not None:
+            e_dict["rotor_positions"] = rotor_positions
+        elif "rotor_positions" not in e_dict:
+            e_dict["rotor_positions"] = []
+        if path is not None:
+            e_dict["path"] = path
+        elif "path" not in e_dict:
+            e_dict["path"] = []
+        if plugboard is not None:
+            e_dict["plugboard"] = plugboard
+        elif "plugboard" not in e_dict:
+            e_dict["plugboard"] = None
+
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            extra=e_dict
+        )
 
 class EnigmaPlugin(AlgorithmPluginBase):
     id = "enigma"

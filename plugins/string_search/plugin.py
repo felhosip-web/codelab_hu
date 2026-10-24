@@ -2,34 +2,28 @@
 from typing import List
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 from core.string_matching import KMPMatcher, RabinKarpMatcher
 
-class StringStep:
+class StringStep(VisualizationStep):
     def __init__(self, text: str, pattern: str, text_pos=0, pattern_pos=0,
                  lps=None, hash_text=None, hash_pattern=None,
                  highlight_text=None, highlight_pattern=None,
                  code_line=0, explanation="", comparisons=0, extra=None, found_positions=None):
-        self.text = text
-        self.pattern = pattern
-        self.text_pos = text_pos
-        self.pattern_pos = pattern_pos
-        self.lps = lps or []
-        self.hash_text = hash_text
-        self.hash_pattern = hash_pattern
-        self.highlight_text = highlight_text or []
-        self.highlight_pattern = highlight_pattern or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.found_positions = found_positions or []
-        # Kompat
-        self.array = list(text)
-        self.key = None
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
+        e_dict = extra.copy() if extra else {}
+        e_dict.update({
+            "text": text, "pattern": pattern, "text_pos": text_pos, "pattern_pos": pattern_pos,
+            "lps": lps or [], "hash_text": hash_text, "hash_pattern": hash_pattern,
+            "highlight_text": highlight_text or [], "highlight_pattern": highlight_pattern or [],
+            "found_positions": found_positions or []
+        })
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            array=list(text),
+            extra=e_dict
+        )
 
 class KMPPlugin(AlgorithmPluginBase):
     id = "kmp"
