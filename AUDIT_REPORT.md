@@ -2,16 +2,17 @@
 
 **Repozitórium:** felhosip-web/codelab_hu
 **Audit dátuma:** 2026. október 25.
-**Audit Típusa:** Kizárólagos Audit Jelentés Felülvizsgálata és Pontosítása (PR #8 Final Accuracy Review)
+**Audit Típusa:** Kizárólagos Audit Jelentés Felülvizsgálata és Pontosítása (PR #8 Final Evidence & Metadata Pass)
 
 ---
 
-## 1. Audit Alapvonal (Audit Baseline)
+## 1. Audit Alapvonal És Metaadatok (Audit Baseline)
 
-Az audit felülvizsgálata során az alábbi duplán ellenőrzött metaadatok érvényesek:
+Az audit során az alábbi elkülönített commit metaadatok érvényesek:
 
 - **Vizsgált forráskód alapvonal (Inspected Source Baseline):** `589a6dd6eb7d2419565973be1399a2d36fd4cbc7` (`origin/main`, Pull Request #7 merge commit)
-- **A PR kiindulási HEAD commitja a feladat indításakor:** `bab1f321521dfbcc05d370e9343666f005469c37`
+- **Előző felülvizsgálat indításkori PR HEAD commitja:** `bab1f321521dfbcc05d370e9343666f005469c37`
+- **Jelen audit feladat indításkori PR HEAD commitja (Inspected PR HEAD):** `fb8bb20e4f1372cb73cb2254506ad3f5d4716877`
 - **Munkaterület állapota (Working-tree status):** Az audit során kizárólag az `AUDIT_REPORT.md` kerül frissítésre, az alkalmazás forráskódja, tesztjei és konfigurációi sértetlenek.
 - **Környezeti adatok az audit során:**
   - **Python verzió:** `Python 3.12.13`
@@ -51,9 +52,9 @@ A CodeLab HU egy moduláris, asztali GUI-ra (PySide6) és REST API-ra épülő a
 | **Egységteszt csomag** | `python3 -m unittest discover -s tests -v` | **SIKERES** (43 teszt lefutott, 0 hiba, 0 bukás, futási idő: ~3.5 mp). |
 | **Kód fordíthatóság** | `python3 -m compileall core plugins ui -q` | **SIKERES** (Minden szintaktikailag érvényes Python kód). |
 | **Plugin betöltés audit** | `PluginLoader.load_all()` | **SIKERES** (Mind az 57 plugin hiba nélkül betöltődött). |
-| **Plugin szélsőérték tesztelése** | QuickSort, MergeSort, DFT, FFT hívása `[]`, `[5]`, `['a', 'b']` adatokkal | **SIKERES**: Nem dobott kivételt, érvényes lépéseket generált. |
-| **REST API szál-timeout teszt** | `_run_with_timeout` hívása végtelen ciklusra | **KÍSÉRLETI BIZONYÍTÉK**: A függvény válaszolt a timeout-ra (408/500), de a Python `threading.Thread` szál tovább futott a háttérben. |
-| **REST API memória korlát ellenőrzése** | `sandbox_max_memory_mb` keresése a kód útvonalain | **IBA**: A `sandbox_max_memory_mb` érték szerepel a konfigurációban (`core/rest_api.py:47`), de sehol sincs érvényesítve a kód végrehajtási útvonalán! |
+| **Plugin reprodukciós mérések** | `QuickSort`, `MergeSort`, `DFT`, `FFT` tesztelése `[]`, `[5]`, `[5, 3]`, `['a', 'b']` adatokkal | **DOKUMENTÁLT KÍSÉRLETI BIZONYÍTÉK**: Lásd 5/B szakasz (egyik sem dobott nem kezelt kivételt). |
+| **REST API szál-timeout teszt** | `_run_with_timeout` hívása végtelen ciklusra | **KÍSÉRLETI BIZONYÍTÉK**: A függvény válaszolt a timeout-ra (408/500), de a daemon Python `threading.Thread` szál tovább futott a háttérben. |
+| **REST API memória korlát ellenőrzése** | `sandbox_max_memory_mb` keresése a kód útvonalain | **IBA**: A `sandbox_max_memory_mb: int = 50` beállítás szerepel a `core/rest_api.py:47`-ben, de **sehol sincs érvényesítve** a futtatási útvonalon. |
 | **Licenc állományok összevetése** | `LICENSE` vs `LICENSE.txt` tartalmi összehasonlítás | **ELTÉRÉS / INKONZISZTENCIA** (`LICENSE`: MIT, `LICENSE.txt`: GPLv3 + HES kiegészítő feltételek). |
 | **GUI Vizuális ellenőrzés** | PySide6 hiányában a sandboxban | **NEM HAJTHATÓ VÉGRE** (Hiányzó PySide6 modul a környezetben). |
 
@@ -95,14 +96,15 @@ A `.github/workflows/ci.yml` fájl ellenőrzése alapján:
 - **Súlyosság indoklása (Low):** Tényleges biztonsági átlépési lehetőséget nem biztosít, csupán böngészőoldali működési akadályt okoz a beállított origins esetén.
 - **Javasolt javítás:** A bejövő `Origin` kérésfejlécet illeszteni kell az engedélyezett `cors_origins` listára, és a győztes match-et kell visszaadni az `Access-Control-Allow-Origin` fejlécben.
 
-#### `[SEC-03]` Medium / High Risk — Szál-szivárgás a REST API Sandbox Futtatásakor és Hiányzó Memórialimit
+#### `[SEC-03]` Medium / Conditional Risk — Szál-szivárgás Timeout Esetén és Nem Érvényesített Memórialimit
 - **Kategória:** Biztonság / Erőforrás-kezelés
 - **Fájl és sorok:** `core/rest_api.py:47, 69-87, 289-296`
 - **Igazolt tények:**
-  1. A REST API a pluginok futtatását a `_run_with_timeout` segédfüggvényen keresztül végzi (`threading.Thread` + `t.join(timeout)`). Teszteléssel igazolt, hogy végtelen ciklus esetén a HTTP kérés visszatér ugyan időtúllépéssel, de **a háttérszál leállítatlanul fut tovább**. A feltételes DoS (erőforrás-kimerítés) ismételt hibás kérések esetén lehetséges kockázatként értékelendő.
+  1. A REST API a pluginok futtatását a `_run_with_timeout` segédfüggvényen keresztül végzi (`threading.Thread` + `t.join(timeout)`). Kísérletileg igazolt, hogy végtelen ciklus esetén a HTTP kérés válaszol ugyan időtúllépéssel, de a háttérszál tovább fut.
   2. A `RESTConfig` osztályban definiált `sandbox_max_memory_mb: int = 50` beállítás **sehol sincs érvényesítve a végrehajtási útvonalon**.
-- **Súlyosság indoklása (Medium / High Risk):** Bár az endpoint alapértelmezetten tiltva van és `execute` jogosultságot igényel, a "sandbox" elnevezés hamis biztonságérzetet kelt.
-- **Javasolt javítás:** Folyamat-alapú futtatásra (`multiprocessing` vagy `subprocess`) való áttérés, amellyel az időtúllépéskor a munkamenet garantáltan megszakítható (`process.terminate()`), és a memórialimit is kikényszeríthető.
+- **Fenyegetési modell és előfeltételek:** A REST API alapértelmezetten tiltva van (`enabled: False`), csak localhoston hallgat (`127.0.0.1`), és az `/api/v2/run` endpoint használatához `execute` jogosultságú API-kulcs szükséges.
+- **Súlyosság indoklása (Medium / Conditional Risk):** A szál nem áll le, és a memórialimit nincs kikényszerítve, de a beállított előfeltételek (kikapcsolt állapot, jogosultság) miatt a tetszőleges távoli DoS közvetlenül nem hívható elő. Ezért a kockázat nem P0, hanem P1 prioritású közepes kockázat.
+- **Javasolt javítás (P1):** Folyamat-alapú futtatásra (`multiprocessing` vagy `subprocess`) való áttérés, amellyel az időtúllépéskor a munkamenet leállítható (`process.terminate()`), és a memórialimit is kikényszeríthető.
 
 #### `[SEC-04]` Informational — IP-cím Ellenőrzés Direct-Server Kontextusban
 - **Kategória:** Biztonság / Hozzáférés-vezérlés
@@ -126,11 +128,26 @@ A `.github/workflows/ci.yml` fájl ellenőrzése alapján:
 - **Igazolt tények:** A `load_state()` metódus betölti a mentett tömböt, és ha a mentésben lévő `plugin_id` eltér a jelenlegitől, beállítja a `state.plugin_mismatch = True` flag-et. A `StateManagerDialog.on_load` metódus ezt a flag-et ellenőrzi, és kifejezett figyelmeztető üzenetet mutat a felhasználónak: *"Figyelem: A mentett plugin eltér a jelenlegi plugintól!"*.
 - **Súlyosság (Informational):** A rendszer nem folytatja csendben a működést, hanem értesíti a felhasználót. Ennek felülbírálása vagy az automatikus plugin-váltás bevezetése terméktervezési döntés.
 
-#### `[PLG-01]` Informational / Coverage Gap — Algoritmus Pluginok Szélsőérték Tesztelése
-- **Kategória:** Tesztlefedettség
+#### `[PLG-01]` Informational / Coverage Gap — Algoritmus Pluginok Reprodukciós Mérései
+- **Kategória:** Tesztlefedettség / Kísérleti bizonyíték
 - **Fájl és sorok:** `plugins/quick/plugin.py`, `plugins/merge/plugin.py`, `plugins/fourier/plugin.py`
-- **Igazolt tények:** A QuickSort, MergeSort, DFT és FFT pluginok lefutottak üres (`[]`), egyelemes (`[5]`), érvényes számsorozatokra és nem-szám típusokra (`['a', 'b']`) is anélkül, hogy nem kezelt kivételt dobtak volna.
-- **Súlyosság (Informational):** Concrete hiba nem volt reprodukálható. Ajánlott további automata szélsőérték-tesztek írása.
+- **Igazolt tények és reprodukciós mérések:**
+  A kijelölt pluginok közvetlen futtatásával kapott tényleges kísérleti eredmények:
+  - **QuickSort (`plugins/quick/plugin.py`):**
+    - Üres bemenet `[]`: 2 lépés (kezdő és befejező lépés, nem dobott kivételt).
+    - Egyelemes bemenet `[5]`: 2 lépés (kezdő és befejező lépés, nem dobott kivételt).
+    - Érvényes numerikus `[5, 3]`: 5 lépés.
+    - Nem-numerikus `['a', 'b']`: 5 lépés (a Python karaktereit összehasonlítva lefutott).
+  - **MergeSort (`plugins/merge/plugin.py`):**
+    - Üres bemenet `[]`: 2 lépés.
+    - Egyelemes bemenet `[5]`: 2 lépés.
+    - Érvényes numerikus `[5, 3]`: 7 lépés.
+    - Nem-numerikus `['a', 'b']`: 7 lépés.
+  - **DFT (`plugins/fourier/plugin.py` - `DFTPlugin`):**
+    - Bármely bemenet (`[]`, `[5]`, `[5, 3]`, `['a', 'b']`): a plugin saját alapértelmezett sine jelét generálja (10 lépés), nem függ a bemeneti tömbtől.
+  - **FFT (`plugins/fourier/plugin.py` - `FFTPlugin`):**
+    - Bármely bemenet (`[]`, `[5]`, `[5, 3]`, `['a', 'b']`): a plugin saját alapértelmezett jeltípusát generálja (9 lépés).
+- **Súlyosság (Informational / Coverage Gap):** A vizsgálat igazolta, hogy a pluginok nem dobnak kivételt üres vagy nem-numerikus adatokra. Ajánlott további automata szélsőérték-tesztek írása a tesztlefedettség növelésére.
 
 ---
 
@@ -155,7 +172,7 @@ A `.github/workflows/ci.yml` fájl ellenőrzése alapján:
 | **API Kulcs Kezelés** | Plaintext tárolás JSON fájlban (`api_keys.json`). | **Medium** |
 | **Jogosultság-ellenőrzés** | Admin és X-API-Key ellenőrzés rendben működik. | Rendben |
 | **CORS Konfiguráció** | Vesszővel elválasztott origin lécek összefűzése (W3C hiba). | **Low** |
-| **Sandbox & Izoláció** | Python szálalapú "timeout" nem állítja le a háttérszálat; nem érvényesített memórialimit. | **Medium / High Risk** |
+| **Sandbox & Izoláció** | Python szálalapú "timeout" nem állítja le a háttérszálat; nem érvényesített memórialimit. | **Medium / Conditional Risk** |
 | **Rate Limiting** | Memóriabeli csúsztatott ablak működik. | Alacsony |
 
 ---
@@ -169,13 +186,14 @@ A `.github/workflows/ci.yml` fájl ellenőrzése alapján:
 
 ## 8. Prioritásos Remediációs Ütemterv (Roadmap)
 
-### P0 — Kritikus Biztonsági És Stabilitási Fejlesztések
-1. **`[SEC-03]` Sandbox Átalakítása Folyamat-Alapúra:** A szálalapú timeout cseréje `multiprocessing.Process` vagy `subprocess` futtatásra a REST API `/api/v2/run` endpointjában a garantált leállíthatóság és memórialimit érvényesítés érdekében.
+### P0 — Azonnali Stabilitási / Kritikus Teendők
+*Megjegyzés: A jelenlegi kódbázisban közvetlen távoli kihasználhatóságú P0 kritikus biztonsági rés nem azonosítható (mivel a REST API alapértelmezetten tiltott és kizárólag localhoston hallgat).*
 
 ### P1 — Fontos Működési És Architekturális Helyreállítások
-1. **`[SEC-01]` API Kulcs Hash-elési Opció:** SHA-256 hash alapon történő mentés megfontolása lemezes JSON fájlba íráskor.
-2. **`[SEC-02]` CORS Válaszlécek Javítása:** Pontos Origin-illesztés implementálása.
-3. **`[LIC-01]` Licenc Fájlok Egységesítése:** A maintainerek döntése alapján a `LICENSE` és `LICENSE.txt` közötti eltérés megszüntetése.
+1. **`[SEC-03]` Sandbox Átalakítása Folyamat-Alapúra:** A szálalapú timeout cseréje `multiprocessing.Process` vagy `subprocess` futtatásra a REST API `/api/v2/run` endpointjában a garantált leállíthatóság és a memórialimit (`sandbox_max_memory_mb`) érvényesítése érdekében.
+2. **`[SEC-01]` API Kulcs Hash-elési Opció:** SHA-256 hash alapon történő mentés megfontolása lemezes JSON fájlba íráskor.
+3. **`[SEC-02]` CORS Válaszlécek Javítása:** Pontos Origin-illesztés implementálása.
+4. **`[LIC-01]` Licenc Fájlok Egységesítése:** A maintainerek döntése alapján a `LICENSE` és `LICENSE.txt` közötti eltérés megszüntetése.
 
 ### P2 — Karbantarthatóság És Tesztlefedettség Növelése
 1. **Automata Tesztek Bővítése:** Szélsőérték-tesztek írása az algoritmus-pluginokhoz.
@@ -195,8 +213,8 @@ A `.github/workflows/ci.yml` fájl ellenőrzése alapján:
 A CodeLab HU repozitórium **architektúrája moduláris, átgondolt és jól strukturált**. A meglévő 43 egységteszt sikeresen lefut.
 
 A projekt **célzott stabilizálást igényel (Targeted Stabilization First)**:
-1. A REST API sandbox szál-szivárgásának megszüntetése és a memórialimit érvényesítése folyamat-izolációval (P0).
+1. A REST API sandbox szál-szivárgásának megszüntetése és a memórialimit érvényesítése folyamat-izolációval (P1).
 2. Az API kulcsok hash-elt tárolási opciója és a CORS válaszlécek javítása (P1).
 3. A licencfájlok egységesítése a maintainerek által (P1).
 
-A repozitórium nem igényel teljes újraírást, a megjelölt P0/P1 pontok javításával a szoftver stabil és biztonságos állapotba hozható.
+A repozitórium nem igényel teljes újraírást, a megjelölt P1 pontok javításával a szoftver stabil és biztonságos állapotba hozható.
