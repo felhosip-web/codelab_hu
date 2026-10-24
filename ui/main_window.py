@@ -70,6 +70,8 @@ class MainWindow(QMainWindow):
         rest_api_action.triggered.connect(self.open_rest_api_dialog)
         api_manager_action = tools_menu.addAction(f"🔌 API Manager {API_MANAGER_VERSION}...")
         api_manager_action.triggered.connect(self.open_api_manager_dialog)
+        reload_plugins_action = tools_menu.addAction("🔄 Pluginok újratöltése")
+        reload_plugins_action.triggered.connect(self.on_reload_plugins)
 
         # Adatok
         self.current_array = [3, 4, 6, 8, 9, 5, 2, 10, 7, 1]
@@ -500,6 +502,25 @@ class MainWindow(QMainWindow):
         dialog = APIManagerDialog(self.api_manager, parent=self)
         dialog.exec()
         self.refresh_plugin_list()
+
+    def on_reload_plugins(self):
+        loaded_ids, errors = self.plugin_loader.reload()
+        self.refresh_plugin_list()
+        if errors:
+            err_msg = "\n".join(errors[:10])
+            if len(errors) > 10:
+                err_msg += f"\n...és még {len(errors) - 10} hiba."
+            QMessageBox.warning(
+                self,
+                "Plugin újratöltési figyelmeztetés",
+                f"Újratöltve {len(loaded_ids)} plugin.\nHibák/Figyelmeztetések:\n{err_msg}"
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Pluginok újratöltve",
+                f"Sikeresen újratöltve {len(loaded_ids)} plugin!"
+            )
 
     def open_state_manager_dialog(self):
         dialog = StateManagerDialog(self.engine, parent=self)
