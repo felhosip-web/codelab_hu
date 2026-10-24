@@ -1,5 +1,5 @@
 #!/bin/bash
-# HES Projects® by FePe® - CodeLab HU GitHub Push
+# Hes Projects ® by FePe - CodeLab HU GitHub Push
 # Copyright (C) 2024-2026 Péter Felhősi
 
 set -e
@@ -7,7 +7,7 @@ set -e
 MESSAGE=${1:-"update: CodeLab HU"}
 TAG=${2:-""}
 
-echo "© HES Projects® by FePe® - CodeLab HU - GitHub Push"
+echo "© Hes Projects ® by FePe - CodeLab HU - GitHub Push"
 echo "Üzenet: $MESSAGE"
 if [ -n "$TAG" ]; then
   echo "Tag: $TAG"
@@ -24,11 +24,11 @@ fi
 git add .
 
 # Commit
-git commit -m "$MESSAGE - HES Projects® by FePe® - GNU GPL v3" || echo "Nincs változás vagy már commitolva"
+git commit -m "$MESSAGE - Hes Projects ® by FePe - GNU GPL v3" || echo "Nincs változás vagy már commitolva"
 
 # Tag ha van
 if [ -n "$TAG" ]; then
-  git tag -a "$TAG" -m "$MESSAGE - $TAG - HES Projects® by FePe®" || echo "Tag már létezik"
+  git tag -a "$TAG" -m "$MESSAGE - $TAG - Hes Projects ® by FePe" || echo "Tag már létezik"
   echo "Tag létrehozva: $TAG"
 fi
 
@@ -41,5 +41,5 @@ if [ -n "$TAG" ]; then
   git push origin "$TAG" || echo "Tag push hiba"
 fi
 
-echo "✅ Kész! HES Projects® by FePe®"
+echo "✅ Kész! Hes Projects ® by FePe"
 echo "GitHub: https://github.com/<user>/codelab-hu"

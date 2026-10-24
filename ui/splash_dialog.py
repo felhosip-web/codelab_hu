@@ -31,7 +31,7 @@ class SplashDialog(QDialog):
         title.setAlignment(Qt.AlignCenter)
         frame_layout.addWidget(title)
         
-        subtitle = QLabel(f"{MAIN_CODENAME} - HES Projects® by FePe®")
+        subtitle = QLabel(f"{MAIN_CODENAME} - Hes Projects ® by FePe")
         subtitle.setStyleSheet("color: #fdcb6e; font-size: 16px; font-weight: bold; background: transparent;")
         subtitle.setAlignment(Qt.AlignCenter)
         frame_layout.addWidget(subtitle)
@@ -52,7 +52,7 @@ class SplashDialog(QDialog):
 
 🎮 Vezérlők: AUTO sebesség + MANUAL előre/hátra + progress csúszka mindig látható alul!
 🔴 Breakpointok: feltételes, hit count, logpoint
-🔌 API 2.0 + 🔒 REST API biztonságos + © HES Projects® by FePe®
+🔌 API 2.0 + 🔒 REST API biztonságos + © Hes Projects ® by FePe
 
 Indulj a zölddel! 🟢 Kezdő -> 🟡 Könnyű -> 🟠 Közepes -> ...
         """)

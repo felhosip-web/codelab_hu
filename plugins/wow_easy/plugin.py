@@ -32,7 +32,7 @@ class BinaryBitsPlugin(AlgorithmPluginBase):
     icon = "💡"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     def __init__(self):
         self.params = DynamicParams()
@@ -86,7 +86,7 @@ class PalindromePlugin(AlgorithmPluginBase):
     icon = "🪞"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     def __init__(self):
         self.params = DynamicParams()
@@ -142,7 +142,7 @@ class PowerPlugin(AlgorithmPluginBase):
     icon = "🚀"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     def __init__(self):
         self.params = DynamicParams()
@@ -202,7 +202,7 @@ class CountingSortPlugin(AlgorithmPluginBase):
     icon = "🪣"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     def __init__(self):
         self.params = DynamicParams()
@@ -261,7 +261,7 @@ class LinkedListPlugin(AlgorithmPluginBase):
     icon = "🔗"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     def __init__(self):
         self.params = DynamicParams()
@@ -322,7 +322,7 @@ class PrimeFactorPlugin(AlgorithmPluginBase):
     icon = "🌳"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     def __init__(self):
         self.params = DynamicParams()

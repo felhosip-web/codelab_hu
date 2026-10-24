@@ -1,6 +1,6 @@
 #!/bin/bash
-# HES Projects® by FePe® - CodeLab HU Setup
-echo "© HES Projects® by FePe® - CodeLab HU Setup"
+# Hes Projects ® by FePe - CodeLab HU Setup
+echo "© Hes Projects ® by FePe - CodeLab HU Setup"
 echo "Telepítés..."
 
 # Python check
