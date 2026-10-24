@@ -2,20 +2,7 @@
 from typing import List
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
-
-class SortStep:
-    def __init__(self, array: List[int], key=None, sorted_end=0, 
-                 highlight_indices=None, code_line=0, explanation="", 
-                 comparisons=0, shifts=0, pass_num=0):
-        self.array = array.copy()
-        self.key = key
-        self.sorted_end = sorted_end
-        self.highlight = highlight_indices or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.shifts = shifts
-        self.pass_num = pass_num
+from core.step import VisualizationStep
 
 class InsertionSortPlugin(AlgorithmPluginBase):
     id = "insertion_sort"
@@ -108,23 +95,46 @@ end;"""
         comparisons = 0
         shifts = 0
         n = len(a)
-        yield SortStep(a, key=None, sorted_end=0, code_line=1,
-                       explanation="Kezdés: első elem rendezett", comparisons=0, shifts=0, pass_num=0)
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=0, code_line=1,
+            explanation="Kezdés: első elem rendezett",
+            metrics={"comparisons": 0, "shifts": 0, "pass_num": 0}
+        )
         for i in range(1, n):
-            key = a[i]; j = i - 1
-            yield SortStep(a, key=key, sorted_end=i-1, highlight_indices=[i], code_line=2,
-                           explanation=f"Kulcs: {key} (i={i})", comparisons=comparisons, shifts=shifts, pass_num=i)
+            key = a[i]
+            j = i - 1
+            yield VisualizationStep(
+                array=a, key=key, sorted_end=i-1, highlight=[i], code_line=3,
+                explanation=f"Kulcs: {key} (i={i})",
+                metrics={"comparisons": comparisons, "shifts": shifts, "pass_num": i}
+            )
             while j >= 0 and a[j] > key:
-                comparisons+=1; a[j+1]=a[j]; shifts+=1
-                yield SortStep(a, key=key, sorted_end=i-1, highlight_indices=[j, j+1], code_line=4,
-                               explanation=f"Tolás: a[{j}]={a[j]} > kulcs", comparisons=comparisons, shifts=shifts, pass_num=i)
-                j-=1
-            if j<0:
-                yield SortStep(a, key=key, sorted_end=i-1, highlight_indices=[], code_line=3,
-                               explanation="j < 0 → megáll", comparisons=comparisons, shifts=shifts, pass_num=i)
-            a[j+1]=key
-            yield SortStep(a, key=None, sorted_end=i, highlight_indices=[j+1], code_line=6,
-                           explanation=f"Beilleszt: a[{j+1}]={key}", comparisons=comparisons, shifts=shifts, pass_num=i)
+                comparisons += 1
+                a[j+1] = a[j]
+                shifts += 1
+                yield VisualizationStep(
+                    array=a, key=key, sorted_end=i-1, highlight=[j, j+1], code_line=6,
+                    explanation=f"Tolás: a[{j}]={a[j]} > kulcs",
+                    metrics={"comparisons": comparisons, "shifts": shifts, "pass_num": i}
+                )
+                j -= 1
+            if j < 0:
+                yield VisualizationStep(
+                    array=a, key=key, sorted_end=i-1, highlight=[], code_line=5,
+                    explanation="j < 0 → megáll",
+                    metrics={"comparisons": comparisons, "shifts": shifts, "pass_num": i}
+                )
+            a[j+1] = key
+            yield VisualizationStep(
+                array=a, key=None, sorted_end=i, highlight=[j+1], code_line=8,
+                explanation=f"Beilleszt: a[{j+1}]={key}",
+                metrics={"comparisons": comparisons, "shifts": shifts, "pass_num": i}
+            )
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=n-1, code_line=9,
+            explanation="✅ Kész! Minden elem a helyén.",
+            metrics={"comparisons": comparisons, "shifts": shifts, "pass_num": n}
+        )
     
     def get_code(self, language: str) -> str:
         return self.codes.get(language, self.codes["Python"])

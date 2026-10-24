@@ -1,33 +1,33 @@
 # -*- coding: utf-8 -*-
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 from core.array_concepts import ArrayConcepts, PointerSim
 import random
 
-class ArrayStep:
+class ArrayStep(VisualizationStep):
     def __init__(self, array=None, array_2d=None, jagged=None,
                  pointers=None, memory=None,
                  current_index=None, current_value=None,
                  pointer_name=None, target=None,
                  code_line=0, explanation="", comparisons=0, extra=None):
-        self.array = array or []
-        self.array_2d = array_2d
-        self.jagged = jagged
-        self.pointers = pointers or {}
-        self.memory = memory or {}
-        self.current_index = current_index
-        self.current_value = current_value
-        self.pointer_name = pointer_name
-        self.target = target
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.key = current_value
-        self.sorted_end = -1
-        self.highlight = [current_index] if current_index is not None else []
-        self.shifts = 0
-        self.pass_num = comparisons
+        arr = array or []
+        e_dict = extra.copy() if extra else {}
+        e_dict.update({
+            "array": arr, "array_2d": array_2d, "matrix": array_2d, "jagged": jagged,
+            "pointers": pointers or {}, "memory": memory or {},
+            "current_index": current_index, "current_value": current_value,
+            "pointer_name": pointer_name, "target": target
+        })
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            array=arr,
+            highlight=[current_index] if current_index is not None else [],
+            key=current_value,
+            extra=e_dict
+        )
 
 class ArrayBasicsPlugin(AlgorithmPluginBase):
     id = "array_basics"

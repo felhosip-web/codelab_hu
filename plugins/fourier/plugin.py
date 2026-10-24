@@ -1,31 +1,28 @@
 # -*- coding: utf-8 -*-
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 from core.fourier import Fourier
 import math
 
-class FourierStep:
+class FourierStep(VisualizationStep):
     def __init__(self, signal=None, spectrum=None, magnitude=None, phase=None, frequencies=None,
                  current_k=None, current_n=None, signal_type="",
                  code_line=0, explanation="", comparisons=0, extra=None):
-        self.signal = signal or []
-        self.spectrum = spectrum or []
-        self.magnitude = magnitude or []
-        self.phase = phase or []
-        self.frequencies = frequencies or []
-        self.current_k = current_k
-        self.current_n = current_n
-        self.signal_type = signal_type
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.array = signal or []
-        self.key = None
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
+        sig = signal or []
+        e_dict = extra.copy() if extra else {}
+        e_dict.update({
+            "signal": sig, "spectrum": spectrum or [], "magnitude": magnitude or [],
+            "phase": phase or [], "frequencies": frequencies or [],
+            "current_k": current_k, "current_n": current_n, "signal_type": signal_type
+        })
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            array=sig,
+            extra=e_dict
+        )
 
 class DFTPlugin(AlgorithmPluginBase):
     id = "dft"

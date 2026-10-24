@@ -38,6 +38,11 @@ class ArrayViewerWidget(QFrame):
             if child.widget():
                 child.widget().deleteLater()
         self.labels.clear()
+
+        if array is None:
+            array = []
+        if highlights is None:
+            highlights = []
         
         if key is not None:
             self.key_label.setText(f"{UI_TEXTS['key']}\n{key}")
@@ -56,9 +61,10 @@ class ArrayViewerWidget(QFrame):
             self.labels.append(lbl)
         
         # sorted / unsorted felirat
-        legend = QLabel(f"<span style='color:green'>{UI_TEXTS['sorted']}</span> | <span style='color:gray'>{UI_TEXTS['unsorted']}</span>")
-        legend.setAlignment(Qt.AlignCenter)
-        self.array_layout.addWidget(legend)
+        if array:
+            legend = QLabel(f"<span style='color:green'>{UI_TEXTS['sorted']}</span> | <span style='color:gray'>{UI_TEXTS['unsorted']}</span>")
+            legend.setAlignment(Qt.AlignCenter)
+            self.array_layout.addWidget(legend)
     
     def _style_for(self, idx, sorted_end, highlights):
         base = "border-radius: 6px; border: 1px solid #333; font-weight: bold;"

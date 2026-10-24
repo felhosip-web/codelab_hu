@@ -6,6 +6,7 @@ Egy új algoritmus = egy új mappa a plugins/ alatt 1-2 fájllal
 import importlib.util
 import pathlib
 from typing import Dict, List, Type
+from core.step import VisualizationStep
 
 class AlgorithmPluginBase:
     """Minden pluginnek ezt kell implementálnia"""
@@ -17,7 +18,7 @@ class AlgorithmPluginBase:
     icon: str = "🔹"
     
     def get_steps(self, arr):
-        """Generátor - yield SortStep objektumokat"""
+        """Generátor - yield VisualizationStep objektumokat"""
         raise NotImplementedError
     
     def get_code(self, language: str) -> str:

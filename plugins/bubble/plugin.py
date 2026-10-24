@@ -2,20 +2,7 @@
 from typing import List
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
-
-class SortStep:
-    def __init__(self, array: List[int], key=None, sorted_end=0, 
-                 highlight_indices=None, code_line=0, explanation="", 
-                 comparisons=0, shifts=0, pass_num=0):
-        self.array = array.copy()
-        self.key = key
-        self.sorted_end = sorted_end
-        self.highlight = highlight_indices or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.shifts = shifts
-        self.pass_num = pass_num
+from core.step import VisualizationStep
 
 class BubbleSortPlugin(AlgorithmPluginBase):
     id = "bubble_sort"
@@ -120,29 +107,51 @@ end;"""
         comparisons = 0
         swaps = 0
         n = len(a)
-        yield SortStep(a, key=None, sorted_end=-1, code_line=1,
-                       explanation="Buborék kezdés: nagyok felfelé", comparisons=0, shifts=0, pass_num=0)
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=-1, code_line=1,
+            explanation="Buborék kezdés: nagyok felfelé",
+            metrics={"comparisons": 0, "swaps": 0, "pass_num": 0}
+        )
         for i in range(n):
-            swapped=False
-            yield SortStep(a, key=None, sorted_end=n-i-1, code_line=2,
-                           explanation=f"{i+1}. kör: {n-i-1}-ig vizsgálunk", comparisons=comparisons, shifts=swaps, pass_num=i+1)
+            swapped = False
+            yield VisualizationStep(
+                array=a, key=None, sorted_end=n-i-1, code_line=3,
+                explanation=f"{i+1}. kör: {n-i-1}-ig vizsgálunk",
+                metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1}
+            )
             for j in range(0, n-i-1):
-                comparisons+=1
-                yield SortStep(a, key=None, sorted_end=n-i-1, highlight_indices=[j, j+1], code_line=3,
-                               explanation=f"Összehasonlít: {a[j]} és {a[j+1]}", comparisons=comparisons, shifts=swaps, pass_num=i+1)
+                comparisons += 1
+                yield VisualizationStep(
+                    array=a, key=None, sorted_end=n-i-1, highlight=[j, j+1], code_line=6,
+                    explanation=f"Összehasonlít: {a[j]} és {a[j+1]}",
+                    metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1}
+                )
                 if a[j] > a[j+1]:
                     a[j], a[j+1] = a[j+1], a[j]
-                    swaps+=1; swapped=True
-                    yield SortStep(a, key=None, sorted_end=n-i-1, highlight_indices=[j, j+1], code_line=4,
-                                   explanation=f"Csere! {a[j+1]} > {a[j]}", comparisons=comparisons, shifts=swaps, pass_num=i+1)
-            yield SortStep(a, key=None, sorted_end=n-i-1, code_line=6,
-                           explanation=f"Kör vége, legnagyobb a helyén", comparisons=comparisons, shifts=swaps, pass_num=i+1)
+                    swaps += 1
+                    swapped = True
+                    yield VisualizationStep(
+                        array=a, key=None, sorted_end=n-i-1, highlight=[j, j+1], code_line=7,
+                        explanation=f"Csere! {a[j+1]} > {a[j]}",
+                        metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1}
+                    )
+            yield VisualizationStep(
+                array=a, key=None, sorted_end=n-i-1, code_line=9,
+                explanation="Kör vége, legnagyobb a helyén",
+                metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1}
+            )
             if not swapped:
-                yield SortStep(a, key=None, sorted_end=n-1, code_line=7,
-                               explanation="Nincs csere, kész!", comparisons=comparisons, shifts=swaps, pass_num=i+1)
+                yield VisualizationStep(
+                    array=a, key=None, sorted_end=n-1, code_line=10,
+                    explanation="Nincs csere, kész!",
+                    metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1}
+                )
                 break
-        yield SortStep(a, key=None, sorted_end=n-1, code_line=8,
-                       explanation="✅ Kész!", comparisons=comparisons, shifts=swaps, pass_num=n)
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=n-1, code_line=11,
+            explanation="✅ Kész!",
+            metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": n}
+        )
     
     def get_code(self, language: str) -> str:
         return self.codes.get(language, self.codes["Python"])

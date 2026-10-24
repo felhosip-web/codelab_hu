@@ -2,32 +2,34 @@
 from typing import List, Dict, Set
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 from core.graph import Graph
 import heapq
 from collections import deque
 
-class GraphStep:
+class GraphStep(VisualizationStep):
     def __init__(self, graph: Graph, visited: Set[int] = None, 
                  frontier: List[int] = None, current: int = None,
                  path: List[int] = None, distances: Dict[int, float] = None,
                  code_line=0, explanation="", comparisons=0, extra=None):
-        self.graph = graph
-        self.visited = visited or set()
-        self.frontier = frontier or []
-        self.current = current
-        self.path = path or []
-        self.distances = distances or {}
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        # Kompatibilitás
-        self.array = list(graph.nodes.keys())
-        self.key = None
-        self.sorted_end = -1
-        self.highlight = [current] if current is not None else []
-        self.shifts = 0
-        self.pass_num = comparisons
+        v_set = visited or set()
+        f_list = frontier or []
+        p_list = path or []
+        d_dict = distances or {}
+        e_dict = extra.copy() if extra else {}
+        e_dict.update({
+            "graph": graph, "visited": v_set, "frontier": f_list,
+            "current": current, "path": p_list, "distances": d_dict
+        })
+        nodes_keys = list(graph.nodes.keys()) if hasattr(graph, "nodes") and isinstance(graph.nodes, dict) else []
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            array=nodes_keys,
+            highlight=[current] if current is not None else [],
+            extra=e_dict
+        )
 
 class BFSPlugin(AlgorithmPluginBase):
     id = "bfs"

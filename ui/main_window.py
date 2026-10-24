@@ -451,9 +451,22 @@ class MainWindow(QMainWindow):
             self.explanation_label.setText(f"🛑 Töréspont {line}. sornál {status} ({plugin_id}).")
 
     def show_step(self, step):
-        self.array_viewer.update_state(step.array, step.key, step.sorted_end, step.highlight)
-        self.code_viewer.highlight_line(step.code_line)
-        self.explanation_label.setText(f"{UI_TEXTS['pass']} {step.pass_num} | {step.explanation}")
-        self.stats_bar.update_stats(step.comparisons, step.shifts, step.pass_num)
+        arr = getattr(step, 'array', None)
+        key = getattr(step, 'key', None)
+        sorted_end = getattr(step, 'sorted_end', -1)
+        highlight = getattr(step, 'highlight', getattr(step, 'highlight_indices', []))
+        code_line = getattr(step, 'code_line', getattr(step, 'line', 0))
+        explanation = getattr(step, 'explanation', '')
+
+        self.array_viewer.update_state(arr, key, sorted_end, highlight)
+        self.code_viewer.highlight_line(code_line)
+
+        pass_num = getattr(step, 'pass_num', 0)
+        self.explanation_label.setText(f"{UI_TEXTS['pass']} {pass_num} | {explanation}")
+
+        comp = getattr(step, 'comparisons', 0)
+        shifts = getattr(step, 'shifts', getattr(step, 'swaps', 0))
+        self.stats_bar.update_stats(comp, shifts, pass_num)
+
         self.bottom_progress_slider.setValue(self.current_step_idx)
         self.bottom_progress_label.setText(f"{self.current_step_idx + 1}/{len(self.steps)}")

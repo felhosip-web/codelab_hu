@@ -2,21 +2,7 @@
 from typing import List
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
-
-class SortStep:
-    def __init__(self, array: List[int], key=None, sorted_end=0, 
-                 highlight_indices=None, code_line=0, explanation="", 
-                 comparisons=0, shifts=0, pass_num=0, extra=None):
-        self.array = array.copy()
-        self.key = key
-        self.sorted_end = sorted_end
-        self.highlight = highlight_indices or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.shifts = shifts
-        self.pass_num = pass_num
-        self.extra = extra or {}
+from core.step import VisualizationStep
 
 class SelectionSortPlugin(AlgorithmPluginBase):
     id = "selection_sort"
@@ -108,46 +94,60 @@ end;"""
         swaps = 0
         n = len(a)
         
-        yield SortStep(a, key=None, sorted_end=-1, code_line=1,
-                       explanation="🎯 Kiválasztó kezdés: keresd a minimumot",
-                       comparisons=0, shifts=0, pass_num=0)
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=-1, code_line=1,
+            explanation="🎯 Kiválasztó kezdés: keresd a minimumot",
+            metrics={"comparisons": 0, "swaps": 0, "pass_num": 0}
+        )
         
         for i in range(n):
             min_idx = i
-            yield SortStep(a, key=None, sorted_end=i-1, highlight_indices=[i], code_line=3,
-                           explanation=f"{i+1}. kör: min_idx={i} (a[{i}]={a[i]})",
-                           comparisons=comparisons, shifts=swaps, pass_num=i+1,
-                           extra={"low": i, "min_idx": min_idx})
+            yield VisualizationStep(
+                array=a, key=None, sorted_end=i-1, highlight=[i], code_line=4,
+                explanation=f"{i+1}. kör: min_idx={i} (a[{i}]={a[i]})",
+                metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1},
+                extra={"low": i, "min_idx": min_idx}
+            )
             
             for j in range(i+1, n):
-                comparisons+=1
-                yield SortStep(a, key=None, sorted_end=i-1, highlight_indices=[j, min_idx], code_line=5,
-                               explanation=f"Összehasonlít: a[{j}]={a[j]} < a[{min_idx}]={a[min_idx]}?",
-                               comparisons=comparisons, shifts=swaps, pass_num=i+1,
-                               extra={"low": i, "min_idx": min_idx, "j": j})
+                comparisons += 1
+                yield VisualizationStep(
+                    array=a, key=None, sorted_end=i-1, highlight=[j, min_idx], code_line=6,
+                    explanation=f"Összehasonlít: a[{j}]={a[j]} < a[{min_idx}]={a[min_idx]}?",
+                    metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1},
+                    extra={"low": i, "min_idx": min_idx, "j": j}
+                )
                 if a[j] < a[min_idx]:
                     min_idx = j
-                    yield SortStep(a, key=None, sorted_end=i-1, highlight_indices=[min_idx], code_line=6,
-                                   explanation=f"Új minimum: min_idx={min_idx} ({a[min_idx]})",
-                                   comparisons=comparisons, shifts=swaps, pass_num=i+1,
-                                   extra={"low": i, "min_idx": min_idx, "j": j})
+                    yield VisualizationStep(
+                        array=a, key=None, sorted_end=i-1, highlight=[min_idx], code_line=7,
+                        explanation=f"Új minimum: min_idx={min_idx} ({a[min_idx]})",
+                        metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1},
+                        extra={"low": i, "min_idx": min_idx, "j": j}
+                    )
             
             if min_idx != i:
                 a[i], a[min_idx] = a[min_idx], a[i]
-                swaps+=1
-                yield SortStep(a, key=None, sorted_end=i, highlight_indices=[i, min_idx], code_line=7,
-                               explanation=f"Csere: a[{i}]↔a[{min_idx}], min a helyére",
-                               comparisons=comparisons, shifts=swaps, pass_num=i+1,
-                               extra={"low": i, "min_idx": min_idx})
+                swaps += 1
+                yield VisualizationStep(
+                    array=a, key=None, sorted_end=i, highlight=[i, min_idx], code_line=8,
+                    explanation=f"Csere: a[{i}]↔a[{min_idx}], min a helyére",
+                    metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1},
+                    extra={"low": i, "min_idx": min_idx}
+                )
             else:
-                yield SortStep(a, key=None, sorted_end=i, highlight_indices=[i], code_line=7,
-                               explanation=f"Nincs csere, már a helyén van",
-                               comparisons=comparisons, shifts=swaps, pass_num=i+1,
-                               extra={"low": i, "min_idx": min_idx})
+                yield VisualizationStep(
+                    array=a, key=None, sorted_end=i, highlight=[i], code_line=8,
+                    explanation="Nincs csere, már a helyén van",
+                    metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": i+1},
+                    extra={"low": i, "min_idx": min_idx}
+                )
         
-        yield SortStep(a, key=None, sorted_end=n-1, code_line=8,
-                       explanation="✅ Kész! Minden minimum a helyére került",
-                       comparisons=comparisons, shifts=swaps, pass_num=n)
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=n-1, code_line=9,
+            explanation="✅ Kész! Minden minimum a helyére került",
+            metrics={"comparisons": comparisons, "swaps": swaps, "pass_num": n}
+        )
     
     def get_code(self, language: str) -> str:
         return self.codes.get(language, self.codes["Python"])

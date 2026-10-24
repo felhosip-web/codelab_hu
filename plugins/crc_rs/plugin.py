@@ -1,27 +1,24 @@
 # -*- coding: utf-8 -*-
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 from core.crc_rs import CRCCalculator, SimpleRS
 import random
 
-class CRCStep:
+class CRCStep(VisualizationStep):
     def __init__(self, data="", generator="", current_data="", crc="", position=-1,
                  code_line=0, explanation="", comparisons=0, extra=None):
-        self.data = data
-        self.generator = generator
-        self.current_data = current_data
-        self.crc = crc
-        self.position = position
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.array = []
-        self.key = None
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
+        e_dict = extra.copy() if extra else {}
+        e_dict.update({
+            "data": data, "generator": generator, "current_data": current_data,
+            "crc": crc, "position": position
+        })
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            extra=e_dict
+        )
 
 class CRCPlugin(AlgorithmPluginBase):
     id = "crc"

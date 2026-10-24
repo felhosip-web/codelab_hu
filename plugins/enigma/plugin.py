@@ -1,30 +1,25 @@
 # -*- coding: utf-8 -*-
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
+from core.step import VisualizationStep
 from core.enigma import EnigmaMachine, ALPHABET, ROTOR_WIRINGS
 
-class EnigmaStep:
+class EnigmaStep(VisualizationStep):
     def __init__(self, text="", encoded="", current_char=None, encoded_char=None,
                  rotor_positions=None, path=None, plugboard=None,
                  code_line=0, explanation="", comparisons=0, extra=None):
-        self.text = text
-        self.encoded = encoded
-        self.current_char = current_char
-        self.encoded_char = encoded_char
-        self.rotor_positions = rotor_positions or []
-        self.path = path or []
-        self.plugboard = plugboard
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.extra = extra or {}
-        self.array = []
-        self.key = None
-        self.sorted_end = -1
-        self.highlight = []
-        self.shifts = 0
-        self.pass_num = comparisons
-        self.structure = None
+        e_dict = extra.copy() if extra else {}
+        e_dict.update({
+            "text": text, "encoded": encoded, "current_char": current_char,
+            "encoded_char": encoded_char, "rotor_positions": rotor_positions or [],
+            "path": path or [], "plugboard": plugboard
+        })
+        super().__init__(
+            explanation=explanation,
+            code_line=code_line,
+            metrics={"comparisons": comparisons, "pass_num": comparisons},
+            extra=e_dict
+        )
 
 class EnigmaPlugin(AlgorithmPluginBase):
     id = "enigma"

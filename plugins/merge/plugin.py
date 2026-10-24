@@ -2,21 +2,7 @@
 from typing import List
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
-
-class SortStep:
-    def __init__(self, array: List[int], key=None, sorted_end=0, 
-                 highlight_indices=None, code_line=0, explanation="", 
-                 comparisons=0, shifts=0, pass_num=0, extra=None):
-        self.array = array.copy()
-        self.key = key
-        self.sorted_end = sorted_end
-        self.highlight = highlight_indices or []
-        self.code_line = code_line
-        self.explanation = explanation
-        self.comparisons = comparisons
-        self.shifts = shifts
-        self.pass_num = pass_num
-        self.extra = extra or {}
+from core.step import VisualizationStep
 
 class MergeSortPlugin(AlgorithmPluginBase):
     id = "merge_sort"
@@ -162,10 +148,12 @@ end;"""
         comparisons = 0
         merges = 0
         
-        yield SortStep(a, key=None, sorted_end=-1, code_line=1,
-                       explanation="🔀 Egyesítő kezdés: oszd ketté rekurzívan",
-                       comparisons=0, shifts=0, pass_num=0,
-                       extra={"recursion": [(0, len(a)-1)]})
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=-1, code_line=1,
+            explanation="🔀 Egyesítő kezdés: oszd ketté rekurzívan",
+            metrics={"comparisons": 0, "shifts": 0, "pass_num": 0},
+            extra={"recursion": [(0, len(a)-1)]}
+        )
         
         def merge_sort_recursive(a, l, r, depth):
             nonlocal comparisons, merges
@@ -174,21 +162,23 @@ end;"""
             
             m = l + (r - l)//2
             
-            yield SortStep(a, key=None, sorted_end=-1, highlight_indices=list(range(l, r+1)), code_line=7,
-                           explanation=f"Osztás: [{l},{r}] -> [{l},{m}] és [{m+1},{r}] (depth {depth})",
-                           comparisons=comparisons, shifts=merges, pass_num=depth,
-                           extra={"low": l, "high": r, "mid": m, "recursion": [(l,m), (m+1,r)]})
+            yield VisualizationStep(
+                array=a, key=None, sorted_end=-1, highlight=list(range(l, r+1)), code_line=3,
+                explanation=f"Osztás: [{l},{r}] -> [{l},{m}] és [{m+1},{r}] (depth {depth})",
+                metrics={"comparisons": comparisons, "shifts": merges, "pass_num": depth},
+                extra={"low": l, "high": r, "mid": m, "recursion": [(l,m), (m+1,r)]}
+            )
             
             yield from merge_sort_recursive(a, l, m, depth+1)
             yield from merge_sort_recursive(a, m+1, r, depth+1)
             
-            # Egyesítés
-            yield SortStep(a, key=None, sorted_end=-1, highlight_indices=list(range(l, r+1)), code_line=2,
-                           explanation=f"Egyesítés: [{l},{m}] + [{m+1},{r}]",
-                           comparisons=comparisons, shifts=merges, pass_num=depth,
-                           extra={"low": l, "high": r, "mid": m})
+            yield VisualizationStep(
+                array=a, key=None, sorted_end=-1, highlight=list(range(l, r+1)), code_line=8,
+                explanation=f"Egyesítés: [{l},{m}] + [{m+1},{r}]",
+                metrics={"comparisons": comparisons, "shifts": merges, "pass_num": depth},
+                extra={"low": l, "high": r, "mid": m}
+            )
             
-            # Merge logika vizualizálva
             n1 = m - l + 1
             n2 = r - m
             L = a[l:m+1]
@@ -198,38 +188,60 @@ end;"""
             
             while i < n1 and j < n2:
                 comparisons += 1
-                yield SortStep(a, key=None, sorted_end=-1, highlight_indices=[l+i, m+1+j], code_line=10,
-                               explanation=f"Összehasonlít: {L[i]} vs {R[j]}",
-                               comparisons=comparisons, shifts=merges, pass_num=depth,
-                               extra={"low": l, "high": r, "mid": m, "i": i, "j": j})
+                yield VisualizationStep(
+                    array=a, key=None, sorted_end=-1, highlight=[l+i, m+1+j], code_line=10,
+                    explanation=f"Összehasonlít: {L[i]} vs {R[j]}",
+                    metrics={"comparisons": comparisons, "shifts": merges, "pass_num": depth},
+                    extra={"low": l, "high": r, "mid": m, "i": i, "j": j}
+                )
                 if L[i] <= R[j]:
-                    a[k] = L[i]; i+=1
+                    a[k] = L[i]
+                    i += 1
+                    code_line_write = 11
                 else:
-                    a[k] = R[j]; j+=1
-                merges+=1
-                k+=1
-                yield SortStep(a, key=None, sorted_end=-1, highlight_indices=[k-1], code_line=11,
-                               explanation=f"Beír: a[{k-1}]={a[k-1]}",
-                               comparisons=comparisons, shifts=merges, pass_num=depth,
-                               extra={"low": l, "high": r})
+                    a[k] = R[j]
+                    j += 1
+                    code_line_write = 13
+                merges += 1
+                k += 1
+                yield VisualizationStep(
+                    array=a, key=None, sorted_end=-1, highlight=[k-1], code_line=code_line_write,
+                    explanation=f"Beír: a[{k-1}]={a[k-1]}",
+                    metrics={"comparisons": comparisons, "shifts": merges, "pass_num": depth},
+                    extra={"low": l, "high": r}
+                )
             
             while i < n1:
-                a[k]=L[i]; i+=1; k+=1; merges+=1
-                yield SortStep(a, key=None, sorted_end=-1, highlight_indices=[k-1], code_line=15,
-                               explanation=f"Maradék balból: a[{k-1}]={a[k-1]}",
-                               comparisons=comparisons, shifts=merges, pass_num=depth, extra={"low": l, "high": r})
+                a[k] = L[i]
+                i += 1
+                k += 1
+                merges += 1
+                yield VisualizationStep(
+                    array=a, key=None, sorted_end=-1, highlight=[k-1], code_line=16,
+                    explanation=f"Maradék balból: a[{k-1}]={a[k-1]}",
+                    metrics={"comparisons": comparisons, "shifts": merges, "pass_num": depth},
+                    extra={"low": l, "high": r}
+                )
             while j < n2:
-                a[k]=R[j]; j+=1; k+=1; merges+=1
-                yield SortStep(a, key=None, sorted_end=-1, highlight_indices=[k-1], code_line=17,
-                               explanation=f"Maradék jobból: a[{k-1}]={a[k-1]}",
-                               comparisons=comparisons, shifts=merges, pass_num=depth, extra={"low": l, "high": r})
+                a[k] = R[j]
+                j += 1
+                k += 1
+                merges += 1
+                yield VisualizationStep(
+                    array=a, key=None, sorted_end=-1, highlight=[k-1], code_line=18,
+                    explanation=f"Maradék jobból: a[{k-1}]={a[k-1]}",
+                    metrics={"comparisons": comparisons, "shifts": merges, "pass_num": depth},
+                    extra={"low": l, "high": r}
+                )
         
         yield from merge_sort_recursive(a, 0, len(a)-1, 0)
         
-        yield SortStep(a, key=None, sorted_end=len(a)-1, code_line=20,
-                       explanation="✅ Kész! Egyesítve és rendezve",
-                       comparisons=comparisons, shifts=merges, pass_num=0,
-                       extra={"recursion": []})
+        yield VisualizationStep(
+            array=a, key=None, sorted_end=len(a)-1, code_line=19,
+            explanation="✅ Kész! Egyesítve és rendezve",
+            metrics={"comparisons": comparisons, "shifts": merges, "pass_num": 0},
+            extra={"recursion": []}
+        )
     
     def get_code(self, language: str) -> str:
         return self.codes.get(language, self.codes["Python"])
