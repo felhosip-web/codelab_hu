@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSlider,
     QSplitter,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import APP_NAME, LANGUAGES, UI_TEXTS
+from core.input_parser import parse_array_input, PRESETS
 from core.plugin_system import PluginLoader
 from core.engine import Engine
 from core.api_manager import APIManager
@@ -124,6 +127,42 @@ class MainWindow(QMainWindow):
         for b in [self.btn_play, self.btn_step, self.btn_reset, self.btn_new, self.btn_undo, self.btn_redo]:
             btn_layout.addWidget(b)
         left_layout.addLayout(btn_layout)
+
+        # INTERAKTÍV BEMENET PANEL
+        input_frame = QFrame()
+        input_frame.setStyleSheet("background: #f1f2f6; border-radius: 6px; padding: 4px;")
+        input_vbox = QVBoxLayout(input_frame)
+        input_vbox.setContentsMargins(4, 4, 4, 4)
+
+        input_vbox.addWidget(QLabel("📥 Interaktív bemenet"))
+
+        self.input_edit = QLineEdit(", ".join(map(str, self.current_array)))
+        self.input_edit.setPlaceholderText("pl. 5, 3, 8, 1, 9")
+        self.input_edit.returnPressed.connect(self.on_apply_input)
+        input_vbox.addWidget(self.input_edit)
+
+        input_btn_layout = QHBoxLayout()
+        self.btn_apply = QPushButton("Alkalmaz")
+        self.btn_apply.setStyleSheet("background: #2e86de; color: white; font-weight: bold;")
+        self.btn_apply.clicked.connect(self.on_apply_input)
+        input_btn_layout.addWidget(self.btn_apply)
+
+        input_vbox.addLayout(input_btn_layout)
+
+        input_vbox.addWidget(QLabel("Presetek:"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("-- Válassz preset-et --")
+        for preset_name in PRESETS.keys():
+            self.preset_combo.addItem(preset_name)
+        self.preset_combo.currentTextChanged.connect(self.on_preset_changed)
+        input_vbox.addWidget(self.preset_combo)
+
+        self.input_status_label = QLabel("")
+        self.input_status_label.setStyleSheet("color: #e74c3c; font-size: 10px;")
+        self.input_status_label.setWordWrap(True)
+        input_vbox.addWidget(self.input_status_label)
+
+        left_layout.addWidget(input_frame)
 
         left_layout.addStretch()
         self.plugin_info = QLabel("")
@@ -253,12 +292,55 @@ class MainWindow(QMainWindow):
         self.code_viewer.set_code(code, lang)
         self.code_viewer.set_title(f"{self.current_plugin.id}.cpp - {lang}")
 
+    def is_array_based_plugin(self) -> bool:
+        if not self.current_plugin:
+            return False
+        p_feat = self.plugin_loader.plugin_features.get(self.current_plugin.id, "")
+        return p_feat in ("sorting", "search", "array", "fifo_lifo", "string")
+
+    def update_input_panel_state(self):
+        is_array_plugin = self.is_array_based_plugin()
+        self.input_edit.setEnabled(is_array_plugin)
+        self.btn_apply.setEnabled(is_array_plugin)
+        self.preset_combo.setEnabled(is_array_plugin)
+        if not is_array_plugin:
+            self.input_status_label.setText("Ehhez a pluginhoz automatikus/generált bemenet tartozik.")
+            self.input_status_label.setStyleSheet("color: #7f8c8d; font-size: 10px;")
+        else:
+            self.input_status_label.setText("")
+
+    def on_apply_input(self):
+        raw_str = self.input_edit.text()
+        arr, err = parse_array_input(raw_str)
+        if err:
+            self.input_status_label.setText(err)
+            self.input_status_label.setStyleSheet("color: #e74c3c; font-size: 10px;")
+            QMessageBox.warning(self, "Bemeneti hiba", err)
+            return
+
+        self.input_status_label.setText("✓ Bemenet alkalmazva")
+        self.input_status_label.setStyleSheet("color: #27ae60; font-size: 10px;")
+        self.current_array = arr
+        if self.current_plugin and hasattr(self.current_plugin, 'set_param'):
+            try:
+                self.current_plugin.set_param("array_size", len(arr))
+            except Exception:
+                pass
+        self.reset()
+
+    def on_preset_changed(self, preset_name):
+        if preset_name in PRESETS:
+            arr = PRESETS[preset_name]
+            self.input_edit.setText(", ".join(map(str, arr)))
+            self.on_apply_input()
+
     def on_algo_changed(self, row):
         if row < 0 or row >= len(self.plugins_list):
             return
         self.current_plugin = self.plugins_list[row]
         self.on_language_changed(self.lang_combo.currentText())
         self.update_plugin_info()
+        self.update_input_panel_state()
         self.reset()
 
     def sync_from_engine(self):
@@ -288,6 +370,7 @@ class MainWindow(QMainWindow):
 
     def new_array(self):
         self.current_array = [random.randint(1, 20) for _ in range(10)]
+        self.input_edit.setText(", ".join(map(str, self.current_array)))
         self.engine.current_array = self.current_array
         self.reset()
 
