@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Licenc kezelés - GNU nyílt de saját HES Projects® by FePe®
+Licenc kezelés - GNU GPL v3 (Hes Projects ® by FePe)
 """
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,24 +9,24 @@ import json
 
 @dataclass
 class LicenseInfo:
-    name: str = "HES Projects® by FePe® - CodeLab HU"
+    name: str = "Hes Projects ® by FePe - CodeLab HU"
     short_name: str = "CodeLab HU"
     version: str = "3.0.0"
-    license_type: str = "GNU GPL v3 + HES Projects® Terms"
-    copyright: str = "Copyright (C) 2024-2026 Péter Felhősi (FePe) / HES Projects®"
+    license_type: str = "GNU GPL v3"
+    copyright: str = "Copyright (C) 2024-2026 Péter Felhősi (FePe) / Hes Projects ® by FePe"
     author: str = "Péter Felhősi (FePe)"
-    company: str = "HES Projects®"
-    trademark: str = "HES Projects®, HES®, FePe®, CodeLab HU® are registered trademarks of Péter Felhősi"
-    license_file: str = "LICENSE.txt"
+    company: str = "Hes Projects ® by FePe"
+    trademark: str = "Hes Projects ® by FePe and CodeLab HU branding"
+    license_file: str = "LICENSE"
     gpl_url: str = "https://www.gnu.org/licenses/gpl-3.0.txt"
-    contact: str = "HES Projects® by FePe® - GitHub"
+    contact: str = "Hes Projects ® by FePe - GitHub"
     year: str = "2024-2026"
     
-    attribution_required: str = "HES Projects® by FePe® - CodeLab HU - Copyright (C) 2024-2026 Péter Felhősi"
-    powered_by: str = "Powered by HES Projects® by FePe®"
+    attribution_required: str = "Hes Projects ® by FePe - CodeLab HU - Copyright (C) 2024-2026 Péter Felhősi"
+    powered_by: str = "Powered by Hes Projects ® by FePe"
 
 class LicenseManager:
-    def __init__(self, license_path="LICENSE.txt"):
+    def __init__(self, license_path="LICENSE"):
         self.license_path = Path(license_path)
         self.info = LicenseInfo()
         self.checked = False
@@ -35,19 +35,17 @@ class LicenseManager:
     def get_license_text(self) -> str:
         if self.license_path.exists():
             return self.license_path.read_text(encoding='utf-8')
-        return "LICENSE.txt nem található - HES Projects® by FePe® GNU GPL v3"
+        return "LICENSE nem található - Hes Projects ® by FePe GNU GPL v3"
     
     def get_short_license(self) -> str:
         return f"""{self.info.name} v{self.info.version}
 {self.info.copyright}
 {self.info.license_type}
 
-{self.info.trademark}
-
-This program is free software under GNU GPL v3 with additional HES Projects® terms.
+This program is free software under GNU GPL v3.
 Attribution required: {self.info.attribution_required}
 
-For commercial licensing: {self.info.contact}
+Contact: {self.info.contact}
 """
     
     def get_header(self) -> str:
@@ -78,5 +76,5 @@ For commercial licensing: {self.info.contact}
     
     def validate_attribution(self, text: str) -> bool:
         # Ellenőrzi hogy szerepel-e az attribution
-        required = ["HES Projects", "FePe", "Péter Felhősi"]
+        required = ["Hes Projects", "FePe", "Péter Felhősi"]
         return any(r in text for r in required)
