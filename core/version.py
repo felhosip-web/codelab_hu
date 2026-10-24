@@ -52,8 +52,8 @@ class Version:
 
 
 # === FŐ PROGRAM VERZIÓ ===
-MAIN_VERSION = Version(3, 7, 1)
-MAIN_CODENAME = "Grouped plugins"
+MAIN_VERSION = Version(3, 8, 0)
+MAIN_CODENAME = "Code Workspace"
 
 # === PLUGIN API VERZIÓ ===
 PLUGIN_API_VERSION = Version(1, 0, 0)
