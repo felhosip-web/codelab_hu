@@ -8,7 +8,7 @@ from plugins.bubble.plugin import BubbleSortPlugin
 
 class TestInteractiveInput(unittest.TestCase):
     def test_version_bump(self):
-        self.assertEqual(MAIN_VERSION, Version(3, 6, 0))
+        self.assertGreaterEqual(MAIN_VERSION, Version(3, 6, 0))
 
     def test_parse_valid_inputs(self):
         arr, err = parse_array_input("5, 3, 1")

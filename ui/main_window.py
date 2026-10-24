@@ -5,22 +5,39 @@ Az alaprendszer nem változik, csak pluginokat tölt be
 """
 import random
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSlider,
     QSplitter,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+from core.workspace_config import WorkspaceConfig
+
+CATEGORY_NAMES = {
+    "sorting": "🔀 Rendezések",
+    "search": "🔍 Keresések",
+    "graph": "🌐 Gráfok",
+    "tree": "🌲 Fák & Struktúrák",
+    "fifo_lifo": "📦 Verem & Sor",
+    "array": "📊 Tömbök",
+    "string": "🔤 Szövegek",
+    "encoding": "🔒 Kódolás & Kripto",
+    "crc": "🛡️ CRC & Hibaellenőrzés",
+    "fourier": "🌊 Fourier transzformáció",
+    "program_structure": "⚙️ Programstruktúrák",
+    "general": "🧩 Egyéb",
+}
 
 from core.config import APP_NAME, LANGUAGES, UI_TEXTS
 from core.input_parser import parse_array_input, PRESETS
@@ -43,6 +60,7 @@ class MainWindow(QMainWindow):
         self.resize(1366, 900)
 
         # API MANAGER, BREAKPOINTS, ENGINE ÉS PLUGIN BETÖLTÉS
+        self.workspace_config = WorkspaceConfig.load()
         self.api_manager = APIManager()
         self.breakpoint_manager = BreakpointManager()
         self.engine = Engine(api_manager=self.api_manager, breakpoint_manager=self.breakpoint_manager)
@@ -70,6 +88,10 @@ class MainWindow(QMainWindow):
         rest_api_action.triggered.connect(self.open_rest_api_dialog)
         api_manager_action = tools_menu.addAction(f"🔌 API Manager {API_MANAGER_VERSION}...")
         api_manager_action.triggered.connect(self.open_api_manager_dialog)
+        reload_plugins_action = tools_menu.addAction("🔄 Pluginok újratöltése")
+        reload_plugins_action.triggered.connect(self.on_reload_plugins)
+        workspace_settings_action = tools_menu.addAction("⚙️ Munkaterület beállításai...")
+        workspace_settings_action.triggered.connect(self.open_workspace_settings_dialog)
 
         # Adatok
         self.current_array = [3, 4, 6, 8, 9, 5, 2, 10, 7, 1]
@@ -86,21 +108,30 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
-        main_splitter = QSplitter(Qt.Horizontal)
-        main_layout.addWidget(main_splitter)
+        self.outer_splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(self.outer_splitter)
 
-        # BAL OLDAL
+        # BAL OLDAL (Sidebar)
         left_panel = QFrame()
-        left_panel.setMaximumWidth(260)
+        left_panel.setMaximumWidth(320)
         left_layout = QVBoxLayout(left_panel)
 
-        left_layout.addWidget(QLabel("📚 Algoritmusok (Pluginok)"))
-        self.algo_list = QListWidget()
-        for plugin in self.plugins_list:
-            self.algo_list.addItem(f"{plugin.icon} {plugin.name}")
-        if self.plugins_list:
-            self.algo_list.setCurrentRow(0)
-        self.algo_list.currentRowChanged.connect(self.on_algo_changed)
+        header_layout = QHBoxLayout()
+        header_title = QLabel("📚 Algoritmusok")
+        header_title.setStyleSheet("font-weight: bold;")
+        header_layout.addWidget(header_title)
+
+        self.btn_toggle_sidebar = QPushButton("◀")
+        self.btn_toggle_sidebar.setFixedWidth(28)
+        self.btn_toggle_sidebar.setToolTip("Sidebar ki/be csukása (Ctrl+B)")
+        self.btn_toggle_sidebar.clicked.connect(self.toggle_sidebar)
+        header_layout.addWidget(self.btn_toggle_sidebar)
+
+        left_layout.addLayout(header_layout)
+
+        self.algo_list = QTreeWidget()
+        self.algo_list.setHeaderHidden(True)
+        self.algo_list.currentItemChanged.connect(self.on_algo_tree_changed)
         left_layout.addWidget(self.algo_list)
 
         left_layout.addWidget(QLabel("💻 Nyelv"))
@@ -180,17 +211,31 @@ class MainWindow(QMainWindow):
         self.speed_slider.valueChanged.connect(self.on_speed_changed)
         left_layout.addWidget(self.speed_slider)
 
-        # JOBB OLDAL
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        # MUNKATERÜLET (Vizualizáció + Kód Splitter)
+        self.workspace_panel = QWidget()
+        workspace_layout = QVBoxLayout(self.workspace_panel)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+
+        orient = Qt.Horizontal if self.workspace_config.splitter_orientation == "horizontal" else Qt.Vertical
+        self.workspace_splitter = QSplitter(orient)
+
+        # Vizualizációs panel
+        viz_panel = QWidget()
+        viz_layout = QVBoxLayout(viz_panel)
+        viz_layout.setContentsMargins(0, 0, 0, 0)
 
         self.stats_bar = StatsBar()
-        right_layout.addWidget(self.stats_bar)
+        viz_layout.addWidget(self.stats_bar)
 
-        center_splitter = QSplitter(Qt.Vertical)
         self.array_viewer = ArrayViewerWidget(self.current_array)
-        self.code_viewer = CodeViewerWidget()
+        viz_layout.addWidget(self.array_viewer)
+
+        self.explanation_label = QLabel("Készen áll a rendezésre. Nyomj Lejátszást!")
+        self.explanation_label.setStyleSheet(
+            "background: #2d2d3d; color: white; padding: 10px; border-radius: 6px; font-size: 13px;"
+        )
+        self.explanation_label.setWordWrap(True)
+        viz_layout.addWidget(self.explanation_label)
 
         # Bottom playback bar
         bottom_playback = QFrame()
@@ -252,23 +297,32 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(self.bottom_btn_breakpoint)
 
         self.bottom_playback = bottom_playback
+        viz_layout.addWidget(self.bottom_playback)
 
-        center_splitter.addWidget(self.array_viewer)
-        center_splitter.addWidget(self.code_viewer)
-        center_splitter.setSizes([350, 500])
-        right_layout.addWidget(center_splitter)
+        # Kódnézet panel
+        self.code_viewer = CodeViewerWidget(workspace_config=self.workspace_config)
 
-        self.explanation_label = QLabel("Készen áll a rendezésre. Nyomj Lejátszást!")
-        self.explanation_label.setStyleSheet(
-            "background: #2d2d3d; color: white; padding: 10px; border-radius: 6px; font-size: 13px;"
-        )
-        self.explanation_label.setWordWrap(True)
-        right_layout.addWidget(self.explanation_label)
-        right_layout.addWidget(self.bottom_playback)
+        self.workspace_splitter.addWidget(viz_panel)
+        self.workspace_splitter.addWidget(self.code_viewer)
+        if self.workspace_config.splitter_sizes:
+            self.workspace_splitter.setSizes(self.workspace_config.splitter_sizes)
+        else:
+            self.workspace_splitter.setSizes([500, 500])
 
-        main_splitter.addWidget(left_panel)
-        main_splitter.addWidget(right_panel)
-        main_splitter.setSizes([260, 1100])
+        workspace_layout.addWidget(self.workspace_splitter)
+
+        self.outer_splitter.addWidget(left_panel)
+        self.outer_splitter.addWidget(self.workspace_panel)
+        sb_width = max(180, self.workspace_config.sidebar_width)
+        if self.workspace_config.sidebar_collapsed:
+            self.outer_splitter.setSizes([0, 1200])
+            self.btn_toggle_sidebar.setText("▶")
+        else:
+            self.outer_splitter.setSizes([sb_width, 1100])
+            self.btn_toggle_sidebar.setText("◀")
+
+        self.shortcut_sidebar = QShortcut(QKeySequence("Ctrl+B"), self)
+        self.shortcut_sidebar.activated.connect(self.toggle_sidebar)
 
         self.reset()
         if self.current_plugin:
@@ -334,6 +388,21 @@ class MainWindow(QMainWindow):
             self.input_edit.setText(", ".join(map(str, arr)))
             self.on_apply_input()
 
+    def on_algo_tree_changed(self, current, previous):
+        if not current or current.parent() is None:
+            return
+        plugin_id = current.data(0, Qt.UserRole)
+        if not plugin_id:
+            return
+        plugin = self.plugin_loader.get_plugin(plugin_id)
+        if not plugin or plugin == self.current_plugin:
+            return
+        self.current_plugin = plugin
+        self.on_language_changed(self.lang_combo.currentText())
+        self.update_plugin_info()
+        self.update_input_panel_state()
+        self.reset()
+
     def on_algo_changed(self, row):
         if row < 0 or row >= len(self.plugins_list):
             return
@@ -375,19 +444,51 @@ class MainWindow(QMainWindow):
         self.reset()
 
     def refresh_plugin_list(self, *args, **kwargs):
+        prev_selected_id = self.current_plugin.id if self.current_plugin else None
         self.plugins_list = self.plugin_loader.list_plugins()
+        grouped_plugins = self.plugin_loader.list_plugins_grouped()
+
         self.algo_list.blockSignals(True)
         self.algo_list.clear()
-        for plugin in self.plugins_list:
-            self.algo_list.addItem(f"{plugin.icon} {plugin.name}")
+
+        target_item = None
+        first_child_item = None
+
+        for cat_key, plugins in grouped_plugins.items():
+            if not plugins:
+                continue
+            cat_name = CATEGORY_NAMES.get(cat_key, cat_key.replace("_", " ").title())
+            cat_item = QTreeWidgetItem([cat_name])
+            cat_font = cat_item.font(0)
+            cat_font.setBold(True)
+            cat_item.setFont(0, cat_font)
+            cat_item.setFlags(cat_item.flags() & ~Qt.ItemIsSelectable)
+            self.algo_list.addTopLevelItem(cat_item)
+
+            for plugin in plugins:
+                child_item = QTreeWidgetItem([f"{plugin.icon} {plugin.name}"])
+                child_item.setData(0, Qt.UserRole, plugin.id)
+                cat_item.addChild(child_item)
+
+                if first_child_item is None:
+                    first_child_item = child_item
+
+                if prev_selected_id and plugin.id == prev_selected_id:
+                    target_item = child_item
+
+            cat_item.setExpanded(True)
+
         self.algo_list.blockSignals(False)
-        if self.plugins_list:
-            if self.current_plugin not in self.plugins_list:
-                self.algo_list.setCurrentRow(0)
-                self.on_algo_changed(0)
-            else:
-                idx = self.plugins_list.index(self.current_plugin)
-                self.algo_list.setCurrentRow(idx)
+
+        item_to_select = target_item or first_child_item
+        if item_to_select:
+            self.algo_list.setCurrentItem(item_to_select)
+            p_id = item_to_select.data(0, Qt.UserRole)
+            self.current_plugin = self.plugin_loader.get_plugin(p_id)
+            if self.current_plugin:
+                self.on_language_changed(self.lang_combo.currentText())
+                self.update_plugin_info()
+                self.update_input_panel_state()
         else:
             self.current_plugin = None
             self.update_plugin_info()
@@ -500,6 +601,80 @@ class MainWindow(QMainWindow):
         dialog = APIManagerDialog(self.api_manager, parent=self)
         dialog.exec()
         self.refresh_plugin_list()
+
+    def open_workspace_settings_dialog(self):
+        from ui.workspace_settings_dialog import WorkspaceSettingsDialog
+        dialog = WorkspaceSettingsDialog(self.workspace_config, parent=self)
+        if dialog.exec():
+            self.apply_workspace_config(self.workspace_config)
+
+    def apply_workspace_config(self, config: WorkspaceConfig):
+        self.workspace_config = config
+        orient = Qt.Horizontal if config.splitter_orientation == "horizontal" else Qt.Vertical
+        self.workspace_splitter.setOrientation(orient)
+        if config.splitter_sizes and len(config.splitter_sizes) == 2:
+            self.workspace_splitter.setSizes(config.splitter_sizes)
+        self.code_viewer.apply_workspace_config(config)
+
+        sizes = self.outer_splitter.sizes()
+        if config.sidebar_collapsed:
+            if sizes[0] > 30:
+                config.sidebar_width = sizes[0]
+            self.outer_splitter.setSizes([0, sum(sizes)])
+            self.btn_toggle_sidebar.setText("▶")
+        else:
+            w = max(180, config.sidebar_width)
+            total = sum(sizes) if sum(sizes) > 0 else 1300
+            self.outer_splitter.setSizes([w, max(200, total - w)])
+            self.btn_toggle_sidebar.setText("◀")
+
+    def toggle_sidebar(self):
+        sizes = self.outer_splitter.sizes()
+        if not self.workspace_config.sidebar_collapsed:
+            if sizes[0] > 30:
+                self.workspace_config.sidebar_width = sizes[0]
+            self.workspace_config.sidebar_collapsed = True
+            self.outer_splitter.setSizes([0, sum(sizes)])
+            self.btn_toggle_sidebar.setText("▶")
+        else:
+            self.workspace_config.sidebar_collapsed = False
+            w = max(180, self.workspace_config.sidebar_width)
+            total = sum(sizes) if sum(sizes) > 0 else 1300
+            self.outer_splitter.setSizes([w, max(200, total - w)])
+            self.btn_toggle_sidebar.setText("◀")
+        self.workspace_config.save()
+
+    def closeEvent(self, event):
+        try:
+            if hasattr(self, 'workspace_splitter') and self.workspace_splitter:
+                self.workspace_config.splitter_sizes = self.workspace_splitter.sizes()
+            if hasattr(self, 'outer_splitter') and self.outer_splitter and not self.workspace_config.sidebar_collapsed:
+                sizes = self.outer_splitter.sizes()
+                if sizes[0] > 30:
+                    self.workspace_config.sidebar_width = sizes[0]
+            self.workspace_config.save()
+        except Exception as e:
+            print(f"[MainWindow] Config mentési hiba bezáráskor: {e}")
+        super().closeEvent(event)
+
+    def on_reload_plugins(self):
+        loaded_ids, errors = self.plugin_loader.reload()
+        self.refresh_plugin_list()
+        if errors:
+            err_msg = "\n".join(errors[:10])
+            if len(errors) > 10:
+                err_msg += f"\n...és még {len(errors) - 10} hiba."
+            QMessageBox.warning(
+                self,
+                "Plugin újratöltési figyelmeztetés",
+                f"Újratöltve {len(loaded_ids)} plugin.\nHibák/Figyelmeztetések:\n{err_msg}"
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Pluginok újratöltve",
+                f"Sikeresen újratöltve {len(loaded_ids)} plugin!"
+            )
 
     def open_state_manager_dialog(self):
         dialog = StateManagerDialog(self.engine, parent=self)

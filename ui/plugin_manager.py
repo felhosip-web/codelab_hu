@@ -23,7 +23,8 @@ class PluginManagerDialog(QDialog):
         header.setStyleSheet("background: #2d2d3d; color: white; border-radius: 8px; padding: 8px;")
         header_layout = QVBoxLayout(header)
         header_layout.addWidget(QLabel(f"<b>CodeLab HU {MAIN_VERSION}</b> | Plugin API {PLUGIN_API_VERSION}"))
-        header_layout.addWidget(QLabel(f"Betöltött pluginok: {len(plugin_loader.plugins)} | Hibás: {len(plugin_loader.failed_plugins)}"))
+        errors = plugin_loader.get_load_errors()
+        header_layout.addWidget(QLabel(f"Betöltött pluginok: {len(plugin_loader.plugins)} | Hibák/Figyelmeztetések: {len(errors)}"))
         layout.addWidget(header)
         
         # Táblázat
@@ -38,12 +39,13 @@ class PluginManagerDialog(QDialog):
         
         layout.addWidget(self.table)
         
-        # Hibás pluginok
-        if plugin_loader.failed_plugins:
-            fail_label = QLabel("❌ Hibás pluginok:")
+        # Hibás pluginok / figyelmeztetések
+        errors = plugin_loader.get_load_errors()
+        if errors:
+            fail_label = QLabel("⚠️ Betöltési hibák és figyelmeztetések:")
             fail_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
             layout.addWidget(fail_label)
-            fail_text = "\n".join([f"{f.get('folder','?')}: {f.get('reason','?')}" for f in plugin_loader.failed_plugins])
+            fail_text = "\n".join(errors)
             fail_detail = QLabel(fail_text)
             fail_detail.setStyleSheet("background: #fdecea; padding: 6px; border-radius: 4px; font-family: monospace; font-size: 10px;")
             fail_detail.setWordWrap(True)
