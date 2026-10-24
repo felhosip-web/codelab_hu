@@ -56,6 +56,16 @@ class SecondPlugin(AlgorithmPluginBase):
             errors = loader.get_load_errors()
             self.assertGreater(len(errors), 0)
             self.assertTrue(any("dup_id" in err for err in errors))
+
+            first_instance = loaded[0]
+            loader.plugin_features["dup_id"] = "stale_feature"
+            loader.load_all()
+
+            self.assertIsNot(loader.get_plugin("dup_id"), first_instance)
+            self.assertEqual(loader.get_plugin("dup_id").name, "First")
+            self.assertEqual(loader.plugin_features["dup_id"], "general")
+            self.assertEqual(len(loader.list_plugins()), 1)
+            self.assertEqual(len(loader.get_load_errors()), 1)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

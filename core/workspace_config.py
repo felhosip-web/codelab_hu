@@ -3,7 +3,7 @@
 Munkaterület és kódnézet beállítások kezelője
 """
 import json
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, fields
 from pathlib import Path
 from typing import List
 
@@ -36,9 +36,11 @@ class WorkspaceConfig:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             instance = cls()
-            for key, val in data.items():
-                if hasattr(instance, key):
-                    setattr(instance, key, val)
+            if isinstance(data, dict):
+                for config_field in fields(instance):
+                    key = config_field.name
+                    if key in data and type(data[key]) is type(getattr(instance, key)):
+                        setattr(instance, key, data[key])
             return instance
         except Exception as e:
             print(f"[WorkspaceConfig] Hiba a beállítások betöltésekor: {e}")

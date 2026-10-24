@@ -171,6 +171,7 @@ class PluginLoader:
     def load_all(self):
         """Automatikusan betölti az összes plugint a plugins/ mappából"""
         self.errors = []
+        registered_ids = set()
         if not self.plugins_dir.exists():
             self.plugins_dir.mkdir(exist_ok=True)
             return
@@ -229,7 +230,7 @@ class PluginLoader:
 
                         plugin_id = str(plugin_id).strip()
 
-                        if plugin_id in self.plugins:
+                        if plugin_id in registered_ids:
                             existing_plugin = self.plugins[plugin_id]
                             err_msg = f"[PluginLoader] Ütköző plugin id '{plugin_id}': a(z) {plugin_folder.name}/{attr_name} felülírná {existing_plugin.__class__.__name__}-t. Átugrás (első nyer)."
                             self.errors.append(err_msg)
@@ -250,6 +251,7 @@ class PluginLoader:
                         feat_name = self._get_feature_name(instance, plugin_folder.name)
                         self.plugin_features[plugin_id] = feat_name
                         self.plugins[plugin_id] = instance
+                        registered_ids.add(plugin_id)
                         print(f"[PluginLoader] Betöltve: {instance.name} ({plugin_id}) [feature: {feat_name}]")
             except Exception as e:
                 err_msg = f"[PluginLoader] Hiba {plugin_folder.name} betöltésekor: {e}"

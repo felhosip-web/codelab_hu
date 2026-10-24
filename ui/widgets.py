@@ -67,7 +67,10 @@ class CodeEditor(QPlainTextEdit):
         return space
 
     def update_line_number_area_width(self, new_block_count):
-        self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
+        width = self.line_number_area_width()
+        self.setViewportMargins(width, 0, 0, 0)
+        cr = self.contentsRect()
+        self.line_number_area.setGeometry(QRect(cr.left(), cr.top(), width, cr.height()))
 
     def update_line_number_area(self, rect, dy):
         if dy:
@@ -218,6 +221,7 @@ class CodeViewerWidget(QFrame):
         self.current_code = code
         self.current_lang = lang
         self.code_editor.setPlainText(code)
+        self.code_editor.setExtraSelections([])
 
     def highlight_line(self, line_num: int):
         extra_selections = []

@@ -616,6 +616,18 @@ class MainWindow(QMainWindow):
             self.workspace_splitter.setSizes(config.splitter_sizes)
         self.code_viewer.apply_workspace_config(config)
 
+        sizes = self.outer_splitter.sizes()
+        if config.sidebar_collapsed:
+            if sizes[0] > 30:
+                config.sidebar_width = sizes[0]
+            self.outer_splitter.setSizes([0, sum(sizes)])
+            self.btn_toggle_sidebar.setText("▶")
+        else:
+            w = max(180, config.sidebar_width)
+            total = sum(sizes) if sum(sizes) > 0 else 1300
+            self.outer_splitter.setSizes([w, max(200, total - w)])
+            self.btn_toggle_sidebar.setText("◀")
+
     def toggle_sidebar(self):
         sizes = self.outer_splitter.sizes()
         if not self.workspace_config.sidebar_collapsed:
