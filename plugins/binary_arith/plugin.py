@@ -93,6 +93,36 @@ uint8_t binary_add(uint8_t a, uint8_t b) {
     }
 }
 """,
+        "Pascal": """function BinaryAdd(a, b: Byte): Byte;
+var
+  i, total, sum_bit, carry, result, bit_a, bit_b: Integer;
+begin
+  result := 0; carry := 0;
+  for i := 0 to 7 do begin
+    bit_a := (a shr i) and 1;
+    bit_b := (b shr i) and 1;
+    total := bit_a + bit_b + carry;
+    sum_bit := total mod 2;
+    carry := total div 2;
+    result := result or (sum_bit shl i);
+  end;
+  BinaryAdd := result and $FF;
+end;
+""",
+        "BASIC": r"""FUNCTION BinaryAdd%(a%, b%)
+  a% = a% AND 255: b% = b% AND 255
+  res% = 0: carry% = 0
+  FOR i% = 0 TO 7
+    bitA% = (a% \ (2 ^ i%)) AND 1
+    bitB% = (b% \ (2 ^ i%)) AND 1
+    tot% = bitA% + bitB% + carry%
+    sumBit% = tot% MOD 2
+    carry% = tot% \ 2
+    res% = res% OR (sumBit% * (2 ^ i%))
+  NEXT i%
+  BinaryAdd% = res% AND 255
+END FUNCTION
+""",
     }
 
     def get_code(self, lang: str) -> str:
@@ -287,6 +317,42 @@ uint8_t binary_sub(uint8_t a, uint8_t b) {
     }
 }
 """,
+        "Pascal": """function BinarySub(a, b: Byte): Byte;
+var
+  i, diff, diff_bit, borrow, result, bit_a, bit_b: Integer;
+begin
+  result := 0; borrow := 0;
+  for i := 0 to 7 do begin
+    bit_a := (a shr i) and 1;
+    bit_b := (b shr i) and 1;
+    diff := bit_a - bit_b - borrow;
+    if diff < 0 then begin
+      diff_bit := diff + 2; borrow := 1;
+    end else begin
+      diff_bit := diff; borrow := 0;
+    end;
+    result := result or (diff_bit shl i);
+  end;
+  BinarySub := result and $FF;
+end;
+""",
+        "BASIC": r"""FUNCTION BinarySub%(a%, b%)
+  a% = a% AND 255: b% = b% AND 255
+  res% = 0: borrow% = 0
+  FOR i% = 0 TO 7
+    bitA% = (a% \ (2 ^ i%)) AND 1
+    bitB% = (b% \ (2 ^ i%)) AND 1
+    diff% = bitA% - bitB% - borrow%
+    IF diff% < 0 THEN
+      diffBit% = diff% + 2: borrow% = 1
+    ELSE
+      diffBit% = diff%: borrow% = 0
+    END IF
+    res% = res% OR (diffBit% * (2 ^ i%))
+  NEXT i%
+  BinarySub% = res% AND 255
+END FUNCTION
+""",
     }
 
     def get_code(self, lang: str) -> str:
@@ -460,6 +526,34 @@ uint16_t binary_mul(uint8_t a, uint8_t b) {
         return result;
     }
 }
+""",
+        "Pascal": """function BinaryMul(a, b: Byte): Word;
+var
+  i, bit_b, partial, result: Integer;
+begin
+  result := 0;
+  for i := 0 to 7 do begin
+    bit_b := (b shr i) and 1;
+    if bit_b = 1 then begin
+      partial := a shl i;
+      result := result + partial;
+    end;
+  end;
+  BinaryMul := result;
+end;
+""",
+        "BASIC": r"""FUNCTION BinaryMul%(a%, b%)
+  a% = a% AND 255: b% = b% AND 255
+  res% = 0
+  FOR i% = 0 TO 7
+    bitB% = (b% \ (2 ^ i%)) AND 1
+    IF bitB% = 1 THEN
+      part% = a% * (2 ^ i%)
+      res% = res% + part%
+    END IF
+  NEXT i%
+  BinaryMul% = res%
+END FUNCTION
 """,
     }
 

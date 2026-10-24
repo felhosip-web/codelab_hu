@@ -15,6 +15,16 @@ class TestBinaryArithPlugins(unittest.TestCase):
         self.assertIn("binary_sub", plugins)
         self.assertIn("binary_mul", plugins)
 
+    def test_supported_languages(self):
+        expected_langs = {"Python", "C++", "C", "Java", "Pascal", "BASIC"}
+        for pid in ["binary_add", "binary_sub", "binary_mul"]:
+            plugin = self.loader.get_plugin(pid)
+            supported = set(plugin.get_supported_languages())
+            self.assertTrue(expected_langs.issubset(supported), f"{pid} missing languages: {expected_langs - supported}")
+            for lang in expected_langs:
+                code = plugin.get_code(lang)
+                self.assertTrue(len(code) > 0, f"{pid} code for {lang} is empty")
+
     def test_binary_add_steps(self):
         plugin = self.loader.get_plugin("binary_add")
         self.assertIsNotNone(plugin)
