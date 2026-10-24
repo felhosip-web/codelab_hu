@@ -1,5 +1,6 @@
 # CodeLab HU
 
+![CI](https://github.com/felhosip-web/codelab_hu/actions/workflows/ci.yml/badge.svg)
 ![Version](https://img.shields.io/badge/version-3.5.0-blue.svg)
 ![License](https://img.shields.io/badge/license-GNU%20GPL%20v3-green.svg)
 ![Plugins](https://img.shields.io/badge/plugins-20-orange.svg)
