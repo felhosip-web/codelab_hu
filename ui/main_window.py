@@ -12,15 +12,31 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSlider,
     QSplitter,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+CATEGORY_NAMES = {
+    "sorting": "🔀 Rendezések",
+    "search": "🔍 Keresések",
+    "graph": "🌐 Gráfok",
+    "tree": "🌲 Fák & Struktúrák",
+    "fifo_lifo": "📦 Verem & Sor",
+    "array": "📊 Tömbök",
+    "string": "🔤 Szövegek",
+    "encoding": "🔒 Kódolás & Kripto",
+    "crc": "🛡️ CRC & Hibaellenőrzés",
+    "fourier": "🌊 Fourier transzformáció",
+    "program_structure": "⚙️ Programstruktúrák",
+    "general": "🧩 Egyéb",
+}
 
 from core.config import APP_NAME, LANGUAGES, UI_TEXTS
 from core.input_parser import parse_array_input, PRESETS
@@ -97,12 +113,9 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
 
         left_layout.addWidget(QLabel("📚 Algoritmusok (Pluginok)"))
-        self.algo_list = QListWidget()
-        for plugin in self.plugins_list:
-            self.algo_list.addItem(f"{plugin.icon} {plugin.name}")
-        if self.plugins_list:
-            self.algo_list.setCurrentRow(0)
-        self.algo_list.currentRowChanged.connect(self.on_algo_changed)
+        self.algo_list = QTreeWidget()
+        self.algo_list.setHeaderHidden(True)
+        self.algo_list.currentItemChanged.connect(self.on_algo_tree_changed)
         left_layout.addWidget(self.algo_list)
 
         left_layout.addWidget(QLabel("💻 Nyelv"))
@@ -336,6 +349,21 @@ class MainWindow(QMainWindow):
             self.input_edit.setText(", ".join(map(str, arr)))
             self.on_apply_input()
 
+    def on_algo_tree_changed(self, current, previous):
+        if not current or current.parent() is None:
+            return
+        plugin_id = current.data(0, Qt.UserRole)
+        if not plugin_id:
+            return
+        plugin = self.plugin_loader.get_plugin(plugin_id)
+        if not plugin or plugin == self.current_plugin:
+            return
+        self.current_plugin = plugin
+        self.on_language_changed(self.lang_combo.currentText())
+        self.update_plugin_info()
+        self.update_input_panel_state()
+        self.reset()
+
     def on_algo_changed(self, row):
         if row < 0 or row >= len(self.plugins_list):
             return
@@ -377,19 +405,51 @@ class MainWindow(QMainWindow):
         self.reset()
 
     def refresh_plugin_list(self, *args, **kwargs):
+        prev_selected_id = self.current_plugin.id if self.current_plugin else None
         self.plugins_list = self.plugin_loader.list_plugins()
+        grouped_plugins = self.plugin_loader.list_plugins_grouped()
+
         self.algo_list.blockSignals(True)
         self.algo_list.clear()
-        for plugin in self.plugins_list:
-            self.algo_list.addItem(f"{plugin.icon} {plugin.name}")
+
+        target_item = None
+        first_child_item = None
+
+        for cat_key, plugins in grouped_plugins.items():
+            if not plugins:
+                continue
+            cat_name = CATEGORY_NAMES.get(cat_key, cat_key.replace("_", " ").title())
+            cat_item = QTreeWidgetItem([cat_name])
+            cat_font = cat_item.font(0)
+            cat_font.setBold(True)
+            cat_item.setFont(0, cat_font)
+            cat_item.setFlags(cat_item.flags() & ~Qt.ItemIsSelectable)
+            self.algo_list.addTopLevelItem(cat_item)
+
+            for plugin in plugins:
+                child_item = QTreeWidgetItem([f"{plugin.icon} {plugin.name}"])
+                child_item.setData(0, Qt.UserRole, plugin.id)
+                cat_item.addChild(child_item)
+
+                if first_child_item is None:
+                    first_child_item = child_item
+
+                if prev_selected_id and plugin.id == prev_selected_id:
+                    target_item = child_item
+
+            cat_item.setExpanded(True)
+
         self.algo_list.blockSignals(False)
-        if self.plugins_list:
-            if self.current_plugin not in self.plugins_list:
-                self.algo_list.setCurrentRow(0)
-                self.on_algo_changed(0)
-            else:
-                idx = self.plugins_list.index(self.current_plugin)
-                self.algo_list.setCurrentRow(idx)
+
+        item_to_select = target_item or first_child_item
+        if item_to_select:
+            self.algo_list.setCurrentItem(item_to_select)
+            p_id = item_to_select.data(0, Qt.UserRole)
+            self.current_plugin = self.plugin_loader.get_plugin(p_id)
+            if self.current_plugin:
+                self.on_language_changed(self.lang_combo.currentText())
+                self.update_plugin_info()
+                self.update_input_panel_state()
         else:
             self.current_plugin = None
             self.update_plugin_info()

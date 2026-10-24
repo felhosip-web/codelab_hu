@@ -52,8 +52,8 @@ class Version:
 
 
 # === FŐ PROGRAM VERZIÓ ===
-MAIN_VERSION = Version(3, 7, 0)
-MAIN_CODENAME = "Plugin Manager"
+MAIN_VERSION = Version(3, 7, 1)
+MAIN_CODENAME = "Grouped plugins"
 
 # === PLUGIN API VERZIÓ ===
 PLUGIN_API_VERSION = Version(1, 0, 0)
