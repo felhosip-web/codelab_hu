@@ -43,6 +43,18 @@ class TestStepSchema(unittest.TestCase):
         self.assertEqual(restored.code_line, 5)
         self.assertEqual(restored.explanation, "Test step")
 
+    def test_array_snapshot_copy(self):
+        plugin = BubbleSortPlugin()
+        arr = [4, 2, 5, 1]
+        steps = list(plugin.get_steps(arr))
+
+        first_step_array = steps[0].array
+        final_step_array = steps[-1].array
+
+        self.assertEqual(first_step_array, [4, 2, 5, 1])
+        self.assertEqual(final_step_array, [1, 2, 4, 5])
+        self.assertNotEqual(first_step_array, final_step_array)
+
     def test_bubble_sort_steps_isinstance_and_code_line(self):
         plugin = BubbleSortPlugin()
         arr = [4, 2, 5, 1]

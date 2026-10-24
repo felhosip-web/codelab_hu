@@ -9,11 +9,27 @@ class EnigmaStep(VisualizationStep):
                  rotor_positions=None, path=None, plugboard=None,
                  code_line=0, explanation="", comparisons=0, extra=None):
         e_dict = extra.copy() if extra else {}
-        e_dict.update({
-            "text": text, "encoded": encoded, "current_char": current_char,
-            "encoded_char": encoded_char, "rotor_positions": rotor_positions or [],
-            "path": path or [], "plugboard": plugboard
-        })
+        if text and "text" not in e_dict:
+            e_dict["text"] = text
+        if encoded and "encoded" not in e_dict:
+            e_dict["encoded"] = encoded
+        if current_char is not None and "current_char" not in e_dict:
+            e_dict["current_char"] = current_char
+        if encoded_char is not None and "encoded_char" not in e_dict:
+            e_dict["encoded_char"] = encoded_char
+        if rotor_positions is not None:
+            e_dict["rotor_positions"] = rotor_positions
+        elif "rotor_positions" not in e_dict:
+            e_dict["rotor_positions"] = []
+        if path is not None:
+            e_dict["path"] = path
+        elif "path" not in e_dict:
+            e_dict["path"] = []
+        if plugboard is not None:
+            e_dict["plugboard"] = plugboard
+        elif "plugboard" not in e_dict:
+            e_dict["plugboard"] = None
+
         super().__init__(
             explanation=explanation,
             code_line=code_line,

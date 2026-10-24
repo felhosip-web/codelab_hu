@@ -25,6 +25,12 @@ class VisualizationStep:
     # Runtime (Engine/breakpoint töltheti)
     stopped: bool = False
 
+    def __post_init__(self):
+        if self.array is not None:
+            self.array = list(self.array)
+        if self.highlight is not None and not isinstance(self.highlight, list):
+            self.highlight = list(self.highlight)
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 

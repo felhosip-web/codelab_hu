@@ -11,11 +11,23 @@ class FourierStep(VisualizationStep):
                  code_line=0, explanation="", comparisons=0, extra=None):
         sig = signal or []
         e_dict = extra.copy() if extra else {}
-        e_dict.update({
-            "signal": sig, "spectrum": spectrum or [], "magnitude": magnitude or [],
-            "phase": phase or [], "frequencies": frequencies or [],
-            "current_k": current_k, "current_n": current_n, "signal_type": signal_type
-        })
+        if signal is not None and "signal" not in e_dict:
+            e_dict["signal"] = sig
+        if spectrum is not None and "spectrum" not in e_dict:
+            e_dict["spectrum"] = spectrum
+        if magnitude is not None and "magnitude" not in e_dict:
+            e_dict["magnitude"] = magnitude
+        if phase is not None and "phase" not in e_dict:
+            e_dict["phase"] = phase
+        if frequencies is not None and "frequencies" not in e_dict:
+            e_dict["frequencies"] = frequencies
+        if current_k is not None and "current_k" not in e_dict:
+            e_dict["current_k"] = current_k
+        if current_n is not None and "current_n" not in e_dict:
+            e_dict["current_n"] = current_n
+        if signal_type and "signal_type" not in e_dict:
+            e_dict["signal_type"] = signal_type
+
         super().__init__(
             explanation=explanation,
             code_line=code_line,
@@ -88,22 +100,10 @@ signal = [sin(2π*1*n/8) for n in range(8)]
         
         yield FourierStep(signal=signal, signal_type=signal_type, code_line=2,
                           explanation=f"🌊 DFT: {signal_type} jel, {N} minta, freq={freq} | Időtartomány",
-                          comparisons=0, extra={"phase": "signal", "signal": signal, "type": signal_type, "N": N})
+                          comparisons=0, extra={"stage": "signal", "signal": signal, "type": signal_type, "N": N})
         
-        # DFT lépésenként k szerint
         spectrum = []
         for k in range(N):
-            sum_val = 0j
-            for n in range(N):
-                angle = -2j * math.pi * k * n / N
-                sum_val += signal[n] * complex(math.cos(angle.imag), math.sin(angle.imag)) if isinstance(angle, complex) else signal[n] * complex(math.cos(-2*math.pi*k*n/N), math.sin(-2*math.pi*k*n/N))
-                # Egyszerűsítve
-                sum_val = 0j
-                for nn in range(N):
-                    ang = -2 * math.pi * k * nn / N
-                    sum_val += signal[nn] * complex(math.cos(ang), math.sin(ang))
-                break
-            # Valódi DFT
             real_sum = 0j
             for n in range(N):
                 ang = -2 * math.pi * k * n / N
@@ -111,22 +111,21 @@ signal = [sin(2π*1*n/8) for n in range(8)]
             spectrum.append(real_sum)
             
             mag = Fourier.magnitude_spectrum(spectrum)
-            phase = Fourier.phase_spectrum(spectrum)
+            phase_spec = Fourier.phase_spectrum(spectrum)
             
-            yield FourierStep(signal=signal, spectrum=spectrum, magnitude=mag, phase=phase, current_k=k, signal_type=signal_type, code_line=7,
+            yield FourierStep(signal=signal, spectrum=spectrum, magnitude=mag, phase=phase_spec, current_k=k, signal_type=signal_type, code_line=7,
                               explanation=f"DFT k={k}: X[{k}]={real_sum:.2f} | |X[{k}]|={abs(real_sum):.2f} | Spektrum eddig: {len(spectrum)}/{N}",
-                              comparisons=k+1, extra={"phase": "dft_k", "k": k, "Xk": str(real_sum), "magnitude": mag, "spectrum": [str(s) for s in spectrum], "signal": signal, "N": N})
+                              comparisons=k+1, extra={"stage": "dft_k", "k": k, "Xk": str(real_sum), "magnitude": mag, "spectrum": [str(s) for s in spectrum], "signal": signal, "N": N})
         
         mag = Fourier.magnitude_spectrum(spectrum)
-        phase = Fourier.phase_spectrum(spectrum)
+        phase_spec = Fourier.phase_spectrum(spectrum)
         freqs = Fourier.frequency_bins(N, float(N))
         
-        # Domináns frekvencia
         max_idx = mag.index(max(mag[1:N//2])) if N>2 else 0
         
-        yield FourierStep(signal=signal, spectrum=spectrum, magnitude=mag, phase=phase, frequencies=freqs, signal_type=signal_type, code_line=12,
+        yield FourierStep(signal=signal, spectrum=spectrum, magnitude=mag, phase=phase_spec, frequencies=freqs, signal_type=signal_type, code_line=12,
                           explanation=f"✅ DFT kész: domináns frekvencia k={max_idx} | Magnitúdó max: {max(mag):.2f} | Idő O(n^2)={N*N}",
-                          comparisons=N+1, extra={"phase": "done", "signal": signal, "spectrum": [str(s) for s in spectrum], "magnitude": mag, "phase": phase, "freqs": freqs, "dominant": max_idx, "N": N})
+                          comparisons=N+1, extra={"stage": "done", "signal": signal, "spectrum": [str(s) for s in spectrum], "magnitude": mag, "phase": phase_spec, "freqs": freqs, "dominant": max_idx, "N": N})
     
     def get_code(self, lang): return self.codes.get(lang, self.codes["Python"])
 
@@ -185,8 +184,6 @@ spectrum = fft(signal)
     
     def get_steps(self, arr):
         N = self.params.get("N")
-        # N legyen 2 hatvány
-        # Legközelebbi 2 hatvány
         import math
         pow2 = 1
         while pow2 < N:
@@ -203,18 +200,8 @@ spectrum = fft(signal)
         
         yield FourierStep(signal=signal, signal_type=signal_type, code_line=2,
                           explanation=f"⚡ FFT: {signal_type} {N} minta (2 hatvány!) | Idő: időtartomány",
-                          comparisons=0, extra={"phase": "signal", "signal": signal, "N": N, "type": signal_type})
+                          comparisons=0, extra={"stage": "signal", "signal": signal, "N": N, "type": signal_type})
         
-        # FFT rekurzív lépések szimulálása
-        def fft_steps(x, depth=0):
-            n = len(x)
-            if n <= 1:
-                return x
-            even = x[0::2]
-            odd = x[1::2]
-            return (even, odd, depth)
-        
-        # Szintenként
         level = 0
         current = [signal]
         while len(current[0]) > 1:
@@ -227,24 +214,22 @@ spectrum = fft(signal)
                     next_level.append(odd)
                     yield FourierStep(signal=signal, signal_type=signal_type, code_line=8,
                                       explanation=f"FFT szint {level}: {len(segment)} -> páros {even[:3]}... páratlan {odd[:3]}... | Szétválasztás",
-                                      comparisons=level+1, extra={"phase": f"split_{level}", "segment": segment, "even": even, "odd": odd, "level": level, "N": N})
+                                      comparisons=level+1, extra={"stage": f"split_{level}", "segment": segment, "even": even, "odd": odd, "level": level, "N": N})
                 else:
                     next_level.append(segment)
             current = next_level
             level += 1
         
-        # Végső FFT
         spectrum = Fourier.fft(signal)
         mag = Fourier.magnitude_spectrum(spectrum)
-        phase = Fourier.phase_spectrum(spectrum)
+        phase_spec = Fourier.phase_spectrum(spectrum)
         freqs = Fourier.frequency_bins(N, float(N))
         
-        # Összehasonlítás DFT vs FFT
         dft_ops = N*N
         fft_ops = int(N * math.log2(N)) if N>0 else 0
         
-        yield FourierStep(signal=signal, spectrum=spectrum, magnitude=mag, phase=phase, frequencies=freqs, signal_type=signal_type, code_line=12,
+        yield FourierStep(signal=signal, spectrum=spectrum, magnitude=mag, phase=phase_spec, frequencies=freqs, signal_type=signal_type, code_line=12,
                           explanation=f"✅ FFT kész: {N} minta | DFT O(n^2)={dft_ops} vs FFT O(n log n)={fft_ops} -> {dft_ops//max(fft_ops,1)}x gyorsabb! | Domináns frekvenciák a magnitúdó csúcsok",
-                          comparisons=level+2, extra={"phase": "done", "signal": signal, "spectrum": [str(s) for s in spectrum], "magnitude": mag, "phase": phase, "freqs": freqs, "N": N, "dft_ops": dft_ops, "fft_ops": fft_ops, "speedup": dft_ops//max(fft_ops,1)})
+                          comparisons=level+2, extra={"stage": "done", "signal": signal, "spectrum": [str(s) for s in spectrum], "magnitude": mag, "phase": phase_spec, "freqs": freqs, "N": N, "dft_ops": dft_ops, "fft_ops": fft_ops, "speedup": dft_ops//max(fft_ops,1)})
     
     def get_code(self, lang): return self.codes.get(lang, self.codes["Python"])

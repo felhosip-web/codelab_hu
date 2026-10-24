@@ -136,10 +136,19 @@ class StructureStep(VisualizationStep):
     def __init__(self, structure, current_value=None, highlight_nodes=None, 
                  code_line=0, explanation="", comparisons=0, extra=None, path=None):
         e_dict = extra.copy() if extra else {}
-        e_dict.update({
-            "structure": structure, "current_value": current_value,
-            "highlight_nodes": highlight_nodes or [], "path": path or []
-        })
+        if structure is not None and "structure" not in e_dict:
+            e_dict["structure"] = structure
+        if current_value is not None and "current_value" not in e_dict:
+            e_dict["current_value"] = current_value
+        if highlight_nodes is not None:
+            e_dict["highlight_nodes"] = highlight_nodes
+        elif "highlight_nodes" not in e_dict:
+            e_dict["highlight_nodes"] = []
+        if path is not None:
+            e_dict["path"] = path
+        elif "path" not in e_dict:
+            e_dict["path"] = []
+
         super().__init__(
             explanation=explanation,
             code_line=code_line,

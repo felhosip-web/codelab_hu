@@ -10,11 +10,21 @@ class FIFOStep(VisualizationStep):
                  top=None, front=None, rear=None,
                  code_line=0, explanation="", comparisons=0, extra=None):
         extra_dict = extra.copy() if extra else {}
-        extra_dict.update({
-            "structure": structure, "structure_type": structure_type,
-            "operation": operation, "value": value, "top": top,
-            "front": front, "rear": rear
-        })
+        if structure is not None and "structure" not in extra_dict:
+            extra_dict["structure"] = structure
+        if structure_type and "structure_type" not in extra_dict:
+            extra_dict["structure_type"] = structure_type
+        if operation and "operation" not in extra_dict:
+            extra_dict["operation"] = operation
+        if value is not None and "value" not in extra_dict:
+            extra_dict["value"] = value
+        if top is not None and "top" not in extra_dict:
+            extra_dict["top"] = top
+        if front is not None and "front" not in extra_dict:
+            extra_dict["front"] = front
+        if rear is not None and "rear" not in extra_dict:
+            extra_dict["rear"] = rear
+
         arr = structure if isinstance(structure, list) else []
         super().__init__(
             explanation=explanation,

@@ -12,15 +12,28 @@ class GraphStep(VisualizationStep):
                  frontier: List[int] = None, current: int = None,
                  path: List[int] = None, distances: Dict[int, float] = None,
                  code_line=0, explanation="", comparisons=0, extra=None):
-        v_set = visited or set()
-        f_list = frontier or []
-        p_list = path or []
-        d_dict = distances or {}
         e_dict = extra.copy() if extra else {}
-        e_dict.update({
-            "graph": graph, "visited": v_set, "frontier": f_list,
-            "current": current, "path": p_list, "distances": d_dict
-        })
+        if graph is not None and "graph" not in e_dict:
+            e_dict["graph"] = graph
+        if visited is not None:
+            e_dict["visited"] = visited
+        elif "visited" not in e_dict:
+            e_dict["visited"] = set()
+        if frontier is not None:
+            e_dict["frontier"] = frontier
+        elif "frontier" not in e_dict:
+            e_dict["frontier"] = []
+        if current is not None and "current" not in e_dict:
+            e_dict["current"] = current
+        if path is not None:
+            e_dict["path"] = path
+        elif "path" not in e_dict:
+            e_dict["path"] = []
+        if distances is not None:
+            e_dict["distances"] = distances
+        elif "distances" not in e_dict:
+            e_dict["distances"] = {}
+
         nodes_keys = list(graph.nodes.keys()) if hasattr(graph, "nodes") and isinstance(graph.nodes, dict) else []
         super().__init__(
             explanation=explanation,
