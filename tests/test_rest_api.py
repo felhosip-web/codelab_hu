@@ -142,6 +142,12 @@ def _failing_fault_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
     import sys
     sys.exit(137)  # Simulate crash or SIGKILL exit code
 
+def _result_then_hang_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
+    import time
+    pipe_conn.send(("ok", "preliminary_payload"))
+    while True:
+        time.sleep(0.01)
+
 def _set_limit_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb):
     import os
     from core.rest_api import _set_memory_limit, resource
@@ -257,6 +263,21 @@ class TestSEC03SandboxIsolation(unittest.TestCase):
         self.assertNotIn("timeout", err.lower())
         self.assertIn("exited abnormally with code", err.lower())
         self.assertIn("137", err)
+
+    def test_worker_sends_result_then_hangs_cleaned_up(self):
+        """Edge case: worker sends result but remains alive; caller must terminate it and return controlled error."""
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[1],
+            max_memory_mb=256,
+            timeout_sec=5,
+            target_func=_result_then_hang_worker
+        )
+
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertIn("remained alive after sending result", err)
 
     def test_worker_memory_limit_exceeded_distinction(self):
         """Finding 3: Proves memory limit was applied and distinguishes OOM/MemoryError from timeout/exceptions."""

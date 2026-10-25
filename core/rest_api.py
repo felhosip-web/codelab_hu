@@ -101,6 +101,11 @@ def _set_memory_limit(max_memory_mb: Any) -> tuple[bool, str]:
     Sets RLIMIT_AS on POSIX platforms if resource module is available.
     Returns (success: bool, detail_message: str).
     Does NOT affect the parent process when called in a worker process.
+
+    Platform note: On Windows and non-POSIX platforms lacking resource.RLIMIT_AS,
+    strict OS-level memory enforcement cannot be guaranteed by resource.setrlimit.
+    This function explicitly returns False with an OS limitation notice on unsupported platforms
+    so callers do not falsely claim memory enforcement.
     """
     if max_memory_mb is None:
         return False, "Invalid memory limit configuration: limit cannot be None"
@@ -260,6 +265,15 @@ def _run_in_sandbox_process(plugin_id: str, params: Optional[dict], array: Optio
 
         if got_result and res_data is not None:
             proc.join(timeout=1.0)
+            if proc.is_alive():
+                # Worker sent result but refused to exit within defined cleanup interval
+                proc.terminate()
+                proc.join(timeout=1.0)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(timeout=1.0)
+                return None, "Sandbox process error: worker remained alive after sending result"
+
             status, payload = res_data
             if status == "ok":
                 return payload, None
