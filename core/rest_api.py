@@ -96,23 +96,51 @@ def _serialize_val(val):
     else:
         return str(val)
 
-def _set_memory_limit(max_memory_mb: int):
-    """Sets RLIMIT_AS on POSIX platforms if resource module is available."""
-    if resource is not None and hasattr(resource, 'RLIMIT_AS'):
-        try:
-            if max_memory_mb is None or int(max_memory_mb) <= 0:
-                return  # Do not enforce invalid <= 0 limits
-            bytes_limit = int(max_memory_mb) * 1024 * 1024
-            soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-            new_hard = hard if hard != resource.RLIM_INFINITY else bytes_limit
-            resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, min(bytes_limit, new_hard)))
-        except Exception:
-            pass
+def _set_memory_limit(max_memory_mb: Any) -> tuple[bool, str]:
+    """
+    Sets RLIMIT_AS on POSIX platforms if resource module is available.
+    Returns (success: bool, detail_message: str).
+    Does NOT affect the parent process when called in a worker process.
+    """
+    if max_memory_mb is None:
+        return False, "Invalid memory limit configuration: limit cannot be None"
+    try:
+        limit_mb = int(max_memory_mb)
+        if limit_mb <= 0:
+            return False, f"Invalid memory limit configuration: {max_memory_mb} MB must be positive"
+    except (ValueError, TypeError) as e:
+        return False, f"Invalid memory limit configuration: {e}"
+
+    bytes_limit = limit_mb * 1024 * 1024
+
+    if resource is None or not hasattr(resource, 'RLIMIT_AS'):
+        return False, "OS memory limit enforcement (RLIMIT_AS) unavailable on this platform"
+
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        if hard != resource.RLIM_INFINITY:
+            new_hard = min(bytes_limit, hard)
+        else:
+            new_hard = bytes_limit
+        new_soft = min(bytes_limit, new_hard)
+
+        resource.setrlimit(resource.RLIMIT_AS, (new_soft, new_hard))
+
+        cur_soft, _ = resource.getrlimit(resource.RLIMIT_AS)
+        if cur_soft != new_soft:
+            return False, f"OS error enforcing memory limit: soft limit mismatched ({cur_soft} != {new_soft})"
+        return True, "Enforced"
+    except Exception as e:
+        return False, f"OS error enforcing memory limit: {e}"
 
 def _sandbox_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb):
     """Worker process target executed in process isolation."""
     try:
-        _set_memory_limit(max_memory_mb)
+        mem_ok, mem_msg = _set_memory_limit(max_memory_mb)
+        if not mem_ok and "OS memory limit enforcement" not in mem_msg and "unavailable on this platform" not in mem_msg:
+            # If explicit invalid config or OS failure, report immediately
+            pipe_conn.send(("error", f"Sandbox memory configuration failure: {mem_msg}"))
+            return
 
         from core.plugin_system import PluginLoader
         from core.engine import Engine
@@ -213,28 +241,25 @@ def _run_in_sandbox_process(plugin_id: str, params: Optional[dict], array: Optio
         res_data = None
 
         while time.time() - start_time < eff_timeout:
-            if parent_conn.poll(0.1):
-                res_data = parent_conn.recv()
-                got_result = True
-                break
-            if not proc.is_alive():
-                if parent_conn.poll(0.01):
+            if parent_conn.poll(0.05):
+                try:
                     res_data = parent_conn.recv()
                     got_result = True
+                except (EOFError, OSError):
+                    got_result = False
+                break
+            if not proc.is_alive():
+                # Process exited prior to timeout
+                if parent_conn.poll(0.01):
+                    try:
+                        res_data = parent_conn.recv()
+                        got_result = True
+                    except (EOFError, OSError):
+                        got_result = False
                 break
 
-        if not got_result:
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(timeout=1.0)
-                if proc.is_alive():
-                    proc.kill()
-                    proc.join(timeout=1.0)
-            return None, "Sandbox timeout: a futtatási idő túllépte a korlátot"
-
-        proc.join(timeout=1.0)
-
-        if res_data is not None:
+        if got_result and res_data is not None:
+            proc.join(timeout=1.0)
             status, payload = res_data
             if status == "ok":
                 return payload, None
@@ -243,10 +268,21 @@ def _run_in_sandbox_process(plugin_id: str, params: Optional[dict], array: Optio
             else:
                 return None, payload
 
-        if proc.exitcode != 0:
-            return None, f"Sandbox process exited abnormally with code {proc.exitcode}"
+        # Give process a brief moment to join if it just closed the pipe / exited
+        proc.join(timeout=0.1)
 
-        return [], None
+        if proc.is_alive():
+            # Process is STILL alive after deadline / pipe EOF -> TRUE TIMEOUT
+            proc.terminate()
+            proc.join(timeout=1.0)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=1.0)
+            return None, "Sandbox timeout: a futtatási idő túllépte a korlátot"
+
+        # Process exited before deadline without producing result -> ABNORMAL EXIT / OOM
+        code = proc.exitcode
+        return None, f"Sandbox process exited abnormally with code {code}"
     except Exception as e:
         if proc.is_alive():
             proc.terminate()
