@@ -200,9 +200,35 @@ def _sandbox_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb):
         except Exception:
             pass
 
+def _ensure_worker_terminated(proc: multiprocessing.Process, timeout: float = 1.0) -> bool:
+    """
+    Consistently and reliably terminates a worker process across all paths.
+    Attempts terminate(), waits up to `timeout`, escalates to kill() if necessary,
+    and returns True iff the process is confirmed no longer alive.
+    """
+    if proc is None:
+        return True
+    try:
+        proc.join(timeout=0.05)
+        if not proc.is_alive():
+            return True
+
+        proc.terminate()
+        proc.join(timeout=timeout)
+        if not proc.is_alive():
+            return True
+
+        if hasattr(proc, 'kill'):
+            proc.kill()
+            proc.join(timeout=timeout)
+
+        return not proc.is_alive()
+    except Exception:
+        return not proc.is_alive()
+
 def _run_in_sandbox_process(plugin_id: str, params: Optional[dict], array: Optional[list],
                             max_memory_mb: int = 256, timeout_sec: int = 10,
-                            target_func=None) -> tuple:
+                            target_func=None, pid_callback=None) -> tuple:
     """
     Executes a plugin or target function in a separate, isolated worker process with
     strict timeout and optional memory limits.
@@ -241,6 +267,12 @@ def _run_in_sandbox_process(plugin_id: str, params: Optional[dict], array: Optio
         proc.start()
         child_conn.close()  # Close child end in parent process
 
+        if callable(pid_callback) and proc.pid is not None:
+            try:
+                pid_callback(proc.pid)
+            except Exception:
+                pass
+
         start_time = time.time()
         got_result = False
         res_data = None
@@ -267,11 +299,9 @@ def _run_in_sandbox_process(plugin_id: str, params: Optional[dict], array: Optio
             proc.join(timeout=1.0)
             if proc.is_alive():
                 # Worker sent result but refused to exit within defined cleanup interval
-                proc.terminate()
-                proc.join(timeout=1.0)
-                if proc.is_alive():
-                    proc.kill()
-                    proc.join(timeout=1.0)
+                cleaned = _ensure_worker_terminated(proc, timeout=1.0)
+                if not cleaned:
+                    return None, f"Sandbox process error: worker (PID {proc.pid}) could not be terminated"
                 return None, "Sandbox process error: worker remained alive after sending result"
 
             status, payload = res_data
@@ -287,20 +317,18 @@ def _run_in_sandbox_process(plugin_id: str, params: Optional[dict], array: Optio
 
         if proc.is_alive():
             # Process is STILL alive after deadline / pipe EOF -> TRUE TIMEOUT
-            proc.terminate()
-            proc.join(timeout=1.0)
-            if proc.is_alive():
-                proc.kill()
-                proc.join(timeout=1.0)
+            cleaned = _ensure_worker_terminated(proc, timeout=1.0)
+            if not cleaned:
+                return None, f"Sandbox timeout error: timed-out worker (PID {proc.pid}) could not be terminated"
             return None, "Sandbox timeout: a futtatási idő túllépte a korlátot"
 
         # Process exited before deadline without producing result -> ABNORMAL EXIT / OOM
         code = proc.exitcode
         return None, f"Sandbox process exited abnormally with code {code}"
     except Exception as e:
-        if proc.is_alive():
-            proc.terminate()
-            proc.join(timeout=1.0)
+        cleaned = _ensure_worker_terminated(proc, timeout=1.0)
+        if not cleaned:
+            return None, f"Sandbox execution error: {e} (worker PID {proc.pid} remaining alive)"
         return None, f"Sandbox execution error: {e}"
     finally:
         try:

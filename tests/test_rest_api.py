@@ -213,8 +213,11 @@ class TestSEC03SandboxIsolation(unittest.TestCase):
             self.assertFalse(alive, "Worker process PID should be dead after execution")
 
     def test_worker_infinite_loop_timeout_and_cleanup(self):
-        """Infinite loop worker is stopped on timeout, and process is proven no longer alive."""
+        """Infinite loop worker is stopped on timeout, and process is proven no longer alive via PID check."""
+        import os
         import time
+
+        captured_pid = []
 
         t0 = time.time()
         res, err = _run_in_sandbox_process(
@@ -223,7 +226,8 @@ class TestSEC03SandboxIsolation(unittest.TestCase):
             array=[1, 2, 3],
             max_memory_mb=256,
             timeout_sec=1,
-            target_func=_infinite_loop_worker
+            target_func=_infinite_loop_worker,
+            pid_callback=lambda p: captured_pid.append(p)
         )
         elapsed = time.time() - t0
 
@@ -232,8 +236,21 @@ class TestSEC03SandboxIsolation(unittest.TestCase):
         self.assertIn("timeout", err.lower())
         self.assertGreaterEqual(elapsed, 0.9)
 
+        self.assertEqual(len(captured_pid), 1, "Worker PID should have been captured")
+        w_pid = captured_pid[0]
+        try:
+            os.kill(w_pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+        self.assertFalse(alive, f"Timed-out worker process (PID {w_pid}) is still alive after cleanup!")
+
     def test_repeated_timed_out_executions_no_orphans(self):
-        """Repeated timed-out executions leave 0 orphaned processes."""
+        """Repeated timed-out executions leave 0 orphaned processes (verified via PID handles)."""
+        import os
+
+        captured_pids = []
+
         for _ in range(3):
             res, err = _run_in_sandbox_process(
                 plugin_id="bubble_sort",
@@ -241,11 +258,21 @@ class TestSEC03SandboxIsolation(unittest.TestCase):
                 array=[1],
                 max_memory_mb=256,
                 timeout_sec=1,
-                target_func=_infinite_loop_worker
+                target_func=_infinite_loop_worker,
+                pid_callback=lambda p: captured_pids.append(p)
             )
             self.assertIsNone(res)
             self.assertIsNotNone(err)
             self.assertIn("timeout", err.lower())
+
+        self.assertEqual(len(captured_pids), 3, "All 3 worker PIDs should have been captured")
+        for w_pid in captured_pids:
+            try:
+                os.kill(w_pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+            self.assertFalse(alive, f"Repeated timeout test leaked orphan worker process (PID {w_pid})!")
 
     def test_distinguish_timeout_from_abnormal_exit(self):
         """Finding 2: Process exit before timeout is classified as abnormal exit with exit code, NOT timeout."""
@@ -266,18 +293,31 @@ class TestSEC03SandboxIsolation(unittest.TestCase):
 
     def test_worker_sends_result_then_hangs_cleaned_up(self):
         """Edge case: worker sends result but remains alive; caller must terminate it and return controlled error."""
+        import os
+
+        captured_pid = []
         res, err = _run_in_sandbox_process(
             plugin_id="bubble_sort",
             params=None,
             array=[1],
             max_memory_mb=256,
             timeout_sec=5,
-            target_func=_result_then_hang_worker
+            target_func=_result_then_hang_worker,
+            pid_callback=lambda p: captured_pid.append(p)
         )
 
         self.assertIsNone(res)
         self.assertIsNotNone(err)
         self.assertIn("remained alive after sending result", err)
+
+        self.assertEqual(len(captured_pid), 1, "Worker PID should have been captured")
+        w_pid = captured_pid[0]
+        try:
+            os.kill(w_pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+        self.assertFalse(alive, f"Hanging worker process (PID {w_pid}) is still alive after cleanup!")
 
     def test_worker_memory_limit_exceeded_distinction(self):
         """Finding 3: Proves memory limit was applied and distinguishes OOM/MemoryError from timeout/exceptions."""
