@@ -142,6 +142,16 @@ def _failing_fault_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
     import sys
     sys.exit(137)  # Simulate crash or SIGKILL exit code
 
+def _unsupported_platform_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
+    import core.rest_api
+    # Simulate unsupported platform missing resource/RLIMIT_AS
+    old_resource = core.rest_api.resource
+    try:
+        core.rest_api.resource = None
+        core.rest_api._sandbox_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb)
+    finally:
+        core.rest_api.resource = old_resource
+
 def _result_then_hang_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
     import time
     pipe_conn.send(("ok", "preliminary_payload"))
@@ -344,8 +354,23 @@ class TestSEC03SandboxIsolation(unittest.TestCase):
             "memory" in err.lower() or "exited abnormally" in err.lower() or "memória" in err.lower()
         )
 
+    def test_unsupported_platform_fails_closed(self):
+        """Verify fail-closed requirement: if OS memory limit is unavailable, execution is rejected before plugin runs."""
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[1],
+            max_memory_mb=256,
+            timeout_sec=5,
+            target_func=_unsupported_platform_worker
+        )
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertIn("Sandbox memory configuration failure", err)
+        self.assertIn("unavailable on this platform", err)
+
     def test_invalid_and_nonsensical_configurations(self):
-        """Invalid/nonsensical timeout and memory limit configs fallback safely."""
+        """Invalid/nonsensical timeout and memory limit configs are rejected safely by failing closed."""
         res, err = _run_in_sandbox_process(
             plugin_id="bubble_sort",
             params=None,
@@ -353,12 +378,9 @@ class TestSEC03SandboxIsolation(unittest.TestCase):
             max_memory_mb=0,
             timeout_sec=-5
         )
-        self.assertIsNotNone(res)
-        self.assertIsNone(err)
-        p_id, p_name, ret_arr, steps = res
-        self.assertEqual(p_id, "bubble_sort")
-        self.assertEqual(ret_arr, [2, 1])
-        self.assertIsInstance(steps, list)
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertIn("Sandbox memory configuration failure", err)
 
 if __name__ == "__main__":
     unittest.main()

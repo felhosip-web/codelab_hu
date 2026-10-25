@@ -142,8 +142,8 @@ def _sandbox_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb):
     """Worker process target executed in process isolation."""
     try:
         mem_ok, mem_msg = _set_memory_limit(max_memory_mb)
-        if not mem_ok and "OS memory limit enforcement" not in mem_msg and "unavailable on this platform" not in mem_msg:
-            # If explicit invalid config or OS failure, report immediately
+        if not mem_ok:
+            # Fail closed: reject sandbox execution whenever OS memory enforcement cannot be applied
             pipe_conn.send(("error", f"Sandbox memory configuration failure: {mem_msg}"))
             return
 
@@ -243,23 +243,18 @@ def _run_in_sandbox_process(plugin_id: str, params: Optional[dict], array: Optio
     except Exception:
         ctx = multiprocessing.get_context()
 
-    # Sanitize inputs
+    # Sanitize timeout
     try:
         eff_timeout = float(timeout_sec) if timeout_sec is not None and float(timeout_sec) > 0 else 10.0
     except Exception:
         eff_timeout = 10.0
-
-    try:
-        eff_memory = int(max_memory_mb) if max_memory_mb is not None and int(max_memory_mb) > 0 else 256
-    except Exception:
-        eff_memory = 256
 
     parent_conn, child_conn = ctx.Pipe(duplex=False)
 
     worker_func = target_func if target_func is not None else _sandbox_worker_target
     proc = ctx.Process(
         target=worker_func,
-        args=(child_conn, plugin_id, params, array, eff_memory),
+        args=(child_conn, plugin_id, params, array, max_memory_mb),
         daemon=True
     )
 
