@@ -81,7 +81,7 @@ A részletes plugin-készítési útmutatót és szabályokat a [CONTRIBUTING.md
 
 ## 📜 Licenc és Szerző
 
-- **Szerző**: Péter Felhősi (FePe) / **HES Projects® by FePe®** (2024-2026)
-- **Licenc**: GNU General Public License v3.0 (GNU GPL v3) + HES Projects® feltételek (lásd: [LICENSE](LICENSE) és [LICENSE.txt](LICENSE.txt)).
+- **Szerző**: Péter Felhősi (FePe) / **Hes Projects ® by FePe** (2024-2026)
+- **Licenc**: GNU General Public License v3.0 (GNU GPL v3) (lásd: [LICENSE](LICENSE) és [LICENSE.txt](LICENSE.txt)).
 
-*Powered by HES Projects® by FePe®*
+*Powered by Hes Projects ® by FePe*

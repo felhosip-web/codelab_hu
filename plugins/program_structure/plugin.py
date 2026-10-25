@@ -28,7 +28,7 @@ class VariablesPlugin(AlgorithmPluginBase):
     icon = "📦"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "program_structure"
     def __init__(self):
         self.params = DynamicParams()
@@ -88,7 +88,7 @@ class IfElsePlugin(AlgorithmPluginBase):
     icon = "🔀"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "program_structure"
     def __init__(self):
         self.params = DynamicParams()
@@ -156,7 +156,7 @@ class ForLoopPlugin(AlgorithmPluginBase):
     icon = "🔁"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "program_structure"
     def __init__(self):
         self.params = DynamicParams()
@@ -211,7 +211,7 @@ class WhileLoopPlugin(AlgorithmPluginBase):
     icon = "🔄"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "program_structure"
     def __init__(self):
         self.params = DynamicParams()
@@ -266,7 +266,7 @@ class FunctionPlugin(AlgorithmPluginBase):
     icon = "🔧"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "program_structure"
     def __init__(self):
         self.params = DynamicParams()

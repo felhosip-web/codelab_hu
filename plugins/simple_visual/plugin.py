@@ -29,7 +29,7 @@ class FactorialPlugin(AlgorithmPluginBase):
     icon = "❗"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     
     def __init__(self):
@@ -95,7 +95,7 @@ class FibonacciPlugin(AlgorithmPluginBase):
     icon = "🐚"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     
     def __init__(self):
@@ -164,7 +164,7 @@ class GCDPlugin(AlgorithmPluginBase):
     icon = "🔢"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     
     def __init__(self):
@@ -234,7 +234,7 @@ class SievePlugin(AlgorithmPluginBase):
     icon = "🔍"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     
     def __init__(self):
@@ -304,7 +304,7 @@ class HanoiPlugin(AlgorithmPluginBase):
     icon = "🗼"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU - HES Projects® by FePe®"
+    author = "CodeLab HU - Hes Projects ® by FePe"
     plugin_type = "simple"
     
     def __init__(self):

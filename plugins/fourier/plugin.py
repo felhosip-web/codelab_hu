@@ -45,7 +45,7 @@ class DFTPlugin(AlgorithmPluginBase):
     icon = "🌊"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU Core - HES Projects® by FePe®"
+    author = "CodeLab HU Core - Hes Projects ® by FePe"
     plugin_type = "fourier"
     
     def __init__(self):
@@ -138,7 +138,7 @@ class FFTPlugin(AlgorithmPluginBase):
     icon = "⚡"
     version = "1.0.0"
     api_version_required = "1.0.0"
-    author = "CodeLab HU Core - HES Projects® by FePe®"
+    author = "CodeLab HU Core - Hes Projects ® by FePe"
     plugin_type = "fourier"
     
     def __init__(self):
