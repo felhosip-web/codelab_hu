@@ -68,7 +68,7 @@ Projekttitulus és védjegyek:
 GNU GPL v3:
 ----------
 1. Nyílt forráskód - szabadon használható, módosítható és terjeszthető a GPL v3 feltételei szerint
-2. Attribution megőrzése
+2. Szerzői jogi jelzések és licencszöveg megőrzése
 3. Garancia nincs - "as is"
 
 Kapcsolat: {self.license_manager.info.contact}

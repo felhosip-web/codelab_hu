@@ -43,7 +43,7 @@ class LicenseManager:
 {self.info.license_type}
 
 This program is free software under GNU GPL v3.
-Attribution required: {self.info.attribution_required}
+Project Attribution: {self.info.attribution_required}
 
 Contact: {self.info.contact}
 """
@@ -56,7 +56,7 @@ Contact: {self.info.contact}
 """
     
     def check_license(self) -> bool:
-        # Egyszerű ellenőrzés: van-e LICENSE.txt
+        # Egyszerű ellenőrzés: van-e LICENSE
         self.checked = True
         self.valid = self.license_path.exists()
         return self.valid
