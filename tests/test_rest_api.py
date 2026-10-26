@@ -8,7 +8,7 @@ from pathlib import Path
 
 from core.plugin_system import PluginLoader
 from core.engine import Engine
-from core.rest_api import SecureRESTAPIServer, RESTConfig
+from core.rest_api import SecureRESTAPIServer, RESTConfig, _run_in_sandbox_process
 from core.version import REST_API_VERSION, API_MANAGER_VERSION, MAIN_VERSION
 
 class TestRESTAPI(unittest.TestCase):
@@ -32,6 +32,8 @@ class TestRESTAPI(unittest.TestCase):
         self.server.config.require_api_key = True
         self.server.config.enable_read_endpoints = True
         self.server.config.enable_execute_endpoints = True
+        self.server.config.sandbox_max_memory_mb = 256
+        self.server.config.sandbox_timeout_sec = 10
 
         # Create test keys
         self.read_key = self.server.create_key("read_key", permissions=["read"])
@@ -115,6 +117,322 @@ class TestRESTAPI(unittest.TestCase):
         self.assertIn("steps", res)
         self.assertGreater(len(res["steps"]), 0)
         self.assertLessEqual(len(res["steps"]), 200)
+
+def _infinite_loop_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
+    import time
+    while True:
+        time.sleep(0.01)
+
+def _memory_hog_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
+    from core.rest_api import _set_memory_limit
+    ok, msg = _set_memory_limit(max_memory_mb)
+    if not ok:
+        pipe_conn.send(("error", f"MEMORY_CONFIG_FAIL: {msg}"))
+        return
+    try:
+        # Allocate 500 MB array under strict limit
+        data = bytearray(500 * 1024 * 1024)
+        pipe_conn.send(("ok", len(data)))
+    except MemoryError as me:
+        pipe_conn.send(("error", f"MEMORY_ENFORCED: MemoryError caught ({me})"))
+    except Exception as e:
+        pipe_conn.send(("error", f"WORKER_EXCEPTION: {e}"))
+
+def _failing_fault_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
+    import sys
+    sys.exit(137)  # Simulate crash or SIGKILL exit code
+
+def _unsupported_platform_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
+    import sys
+    import core.rest_api
+    import core.plugin_system
+
+    class GuardedPluginLoader:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("FAIL-CLOSED VIOLATION: PluginLoader was instantiated after memory limit setup failed!")
+
+    # Patch resource = None and monkeypatch PluginLoader to fail if instantiated
+    old_resource = core.rest_api.resource
+    old_loader = core.plugin_system.PluginLoader
+    try:
+        core.rest_api.resource = None
+        core.plugin_system.PluginLoader = GuardedPluginLoader
+        # Directly invoke production _sandbox_worker_target
+        core.rest_api._sandbox_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb)
+    finally:
+        core.rest_api.resource = old_resource
+        core.plugin_system.PluginLoader = old_loader
+
+def _os_setrlimit_failure_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
+    import sys
+    import core.rest_api
+    import core.plugin_system
+    from unittest.mock import patch
+
+    class GuardedPluginLoader:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("FAIL-CLOSED VIOLATION: PluginLoader was instantiated after setrlimit failed!")
+
+    def mock_setrlimit(*args, **kwargs):
+        raise OSError("Simulated OS setrlimit permission error")
+
+    old_loader = core.plugin_system.PluginLoader
+    try:
+        core.plugin_system.PluginLoader = GuardedPluginLoader
+        if core.rest_api.resource is not None:
+            with patch.object(core.rest_api.resource, "setrlimit", side_effect=mock_setrlimit):
+                core.rest_api._sandbox_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb)
+        else:
+            core.rest_api._sandbox_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb)
+    finally:
+        core.plugin_system.PluginLoader = old_loader
+
+def _result_then_hang_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
+    import time
+    pipe_conn.send(("ok", "preliminary_payload"))
+    while True:
+        time.sleep(0.01)
+
+def _set_limit_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb):
+    import os
+    from core.rest_api import _set_memory_limit, resource
+    pid = os.getpid()
+    ok, msg = _set_memory_limit(max_memory_mb)
+    if ok and resource and hasattr(resource, 'RLIMIT_AS'):
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        pipe_conn.send(("ok", (pid, soft, hard)))
+    else:
+        pipe_conn.send(("error", msg))
+
+class TestSEC03SandboxIsolation(unittest.TestCase):
+    """
+    Automated regression tests proving SEC-03 review requirements:
+    - Finding 1: Memory-limit soft/hard calculation, OS failures vs invalid config, parent process unaffected.
+    - Finding 2: Genuine timeout vs abnormal exit distinction with exit codes.
+    - Finding 3: Deterministic worker termination and cleanup verification without orphaned processes.
+    """
+
+    def test_memory_limit_unit_and_parent_process_unaffected(self):
+        """Verify _set_memory_limit calculations, error reports, and parent process isolation."""
+        import sys
+        import os
+        from core.rest_api import _set_memory_limit, resource
+
+        # 1. Invalid config
+        ok, msg = _set_memory_limit(-10)
+        self.assertFalse(ok)
+        self.assertIn("Invalid memory limit configuration", msg)
+
+        ok, msg = _set_memory_limit("invalid")
+        self.assertFalse(ok)
+        self.assertIn("Invalid memory limit configuration", msg)
+
+        if sys.platform != "win32" and resource is not None and hasattr(resource, 'RLIMIT_AS'):
+            parent_soft_before, parent_hard_before = resource.getrlimit(resource.RLIMIT_AS)
+
+            # Execute in isolated sandbox process to verify limit enforcement in worker
+            res, err = _run_in_sandbox_process(
+                plugin_id="bubble_sort",
+                params=None,
+                array=[1],
+                max_memory_mb=1024,
+                timeout_sec=5,
+                target_func=_set_limit_worker_target
+            )
+            self.assertIsNone(err)
+            self.assertIsNotNone(res)
+            worker_pid, w_soft, w_hard = res
+            self.assertEqual(w_soft, 1024 * 1024 * 1024)
+
+            # Verify parent process limits remain untouched
+            parent_soft_after, parent_hard_after = resource.getrlimit(resource.RLIMIT_AS)
+            self.assertEqual(parent_soft_before, parent_soft_after)
+            self.assertEqual(parent_hard_before, parent_hard_after)
+
+            # Verify worker process is dead
+            try:
+                os.kill(worker_pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+            self.assertFalse(alive, "Worker process PID should be dead after execution")
+
+    def test_worker_infinite_loop_timeout_and_cleanup(self):
+        """Infinite loop worker is stopped on timeout, and process is proven no longer alive via PID check."""
+        import os
+        import time
+
+        captured_pid = []
+
+        t0 = time.time()
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[1, 2, 3],
+            max_memory_mb=256,
+            timeout_sec=1,
+            target_func=_infinite_loop_worker,
+            pid_callback=lambda p: captured_pid.append(p)
+        )
+        elapsed = time.time() - t0
+
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertIn("timeout", err.lower())
+        self.assertGreaterEqual(elapsed, 0.9)
+
+        self.assertEqual(len(captured_pid), 1, "Worker PID should have been captured")
+        w_pid = captured_pid[0]
+        try:
+            os.kill(w_pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+        self.assertFalse(alive, f"Timed-out worker process (PID {w_pid}) is still alive after cleanup!")
+
+    def test_repeated_timed_out_executions_no_orphans(self):
+        """Repeated timed-out executions leave 0 orphaned processes (verified via PID handles)."""
+        import os
+
+        captured_pids = []
+
+        for _ in range(3):
+            res, err = _run_in_sandbox_process(
+                plugin_id="bubble_sort",
+                params=None,
+                array=[1],
+                max_memory_mb=256,
+                timeout_sec=1,
+                target_func=_infinite_loop_worker,
+                pid_callback=lambda p: captured_pids.append(p)
+            )
+            self.assertIsNone(res)
+            self.assertIsNotNone(err)
+            self.assertIn("timeout", err.lower())
+
+        self.assertEqual(len(captured_pids), 3, "All 3 worker PIDs should have been captured")
+        for w_pid in captured_pids:
+            try:
+                os.kill(w_pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+            self.assertFalse(alive, f"Repeated timeout test leaked orphan worker process (PID {w_pid})!")
+
+    def test_distinguish_timeout_from_abnormal_exit(self):
+        """Finding 2: Process exit before timeout is classified as abnormal exit with exit code, NOT timeout."""
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[1],
+            max_memory_mb=256,
+            timeout_sec=10,
+            target_func=_failing_fault_worker
+        )
+
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertNotIn("timeout", err.lower())
+        self.assertIn("exited abnormally with code", err.lower())
+        self.assertIn("137", err)
+
+    def test_worker_sends_result_then_hangs_cleaned_up(self):
+        """Edge case: worker sends result but remains alive; caller must terminate it and return controlled error."""
+        import os
+
+        captured_pid = []
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[1],
+            max_memory_mb=256,
+            timeout_sec=5,
+            target_func=_result_then_hang_worker,
+            pid_callback=lambda p: captured_pid.append(p)
+        )
+
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertIn("remained alive after sending result", err)
+
+        self.assertEqual(len(captured_pid), 1, "Worker PID should have been captured")
+        w_pid = captured_pid[0]
+        try:
+            os.kill(w_pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+        self.assertFalse(alive, f"Hanging worker process (PID {w_pid}) is still alive after cleanup!")
+
+    def test_worker_memory_limit_exceeded_distinction(self):
+        """Finding 3: Proves memory limit was applied and distinguishes OOM/MemoryError from timeout/exceptions."""
+        import sys
+        from core.rest_api import resource
+
+        if sys.platform == "win32" or resource is None or not hasattr(resource, 'RLIMIT_AS'):
+            self.skipTest("RLIMIT_AS memory enforcement is POSIX-only. Windows non-POSIX fallback documented.")
+
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[1],
+            max_memory_mb=20,
+            timeout_sec=5,
+            target_func=_memory_hog_worker
+        )
+
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        # Verify that memory enforcement triggered OOM/MemoryError or abnormal exit, NOT a timeout
+        self.assertNotIn("timeout", err.lower())
+        self.assertTrue(
+            "memory" in err.lower() or "exited abnormally" in err.lower() or "memória" in err.lower()
+        )
+
+    def test_unsupported_platform_fails_closed(self):
+        """Verify fail-closed requirement: if OS memory limit is unavailable, production worker target rejects execution before PluginLoader runs."""
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[1],
+            max_memory_mb=256,
+            timeout_sec=5,
+            target_func=_unsupported_platform_worker
+        )
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertIn("Sandbox memory configuration failure", err)
+        self.assertIn("unavailable on this platform", err)
+        self.assertNotIn("FAIL-CLOSED VIOLATION", err, "PluginLoader must NOT be instantiated when memory limit is unsupported!")
+
+    def test_os_setrlimit_failure_fails_closed(self):
+        """Verify OS-level setrlimit failure fails closed and prevents production worker target from instantiating PluginLoader."""
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[1],
+            max_memory_mb=256,
+            timeout_sec=5,
+            target_func=_os_setrlimit_failure_worker
+        )
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertIn("Sandbox memory configuration failure", err)
+        self.assertIn("OS error enforcing memory limit", err)
+        self.assertNotIn("FAIL-CLOSED VIOLATION", err, "PluginLoader must NOT be instantiated when setrlimit fails!")
+
+    def test_invalid_and_nonsensical_configurations(self):
+        """Invalid/nonsensical timeout and memory limit configs are rejected safely by failing closed."""
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[2, 1],
+            max_memory_mb=0,
+            timeout_sec=-5
+        )
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertIn("Sandbox memory configuration failure", err)
 
 if __name__ == "__main__":
     unittest.main()

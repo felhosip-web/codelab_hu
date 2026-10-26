@@ -2,10 +2,13 @@
 """
 Biztonságos REST API - nyílt részek védelemmel, illetéktelen használat ellen
 """
+import os
+import sys
 import json
 import time
 import hashlib
 import secrets
+import multiprocessing
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Any, Optional, Callable
@@ -14,6 +17,11 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import urllib.parse
 from core.version import MAIN_VERSION, API_MANAGER_VERSION, REST_API_VERSION
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 @dataclass
 class APIKey:
@@ -44,7 +52,7 @@ class RESTConfig:
     log_all_requests: bool = True
     log_file: str = "saves/api_access.log"
     enable_sandbox: bool = True
-    sandbox_max_memory_mb: int = 50
+    sandbox_max_memory_mb: int = 256
     sandbox_timeout_sec: int = 10
     allowed_ips: List[str] = field(default_factory=lambda: ["127.0.0.1"])
     block_unknown_ips: bool = True
@@ -88,27 +96,245 @@ def _serialize_val(val):
     else:
         return str(val)
 
-def _run_with_timeout(func, timeout=10):
-    result = []
-    exception = []
+def _set_memory_limit(max_memory_mb: Any) -> tuple[bool, str]:
+    """
+    Sets RLIMIT_AS on POSIX platforms if resource module is available.
+    Returns (success: bool, detail_message: str).
+    Does NOT affect the parent process when called in a worker process.
 
-    def target():
+    Platform note: On Windows and non-POSIX platforms lacking resource.RLIMIT_AS,
+    strict OS-level memory enforcement cannot be guaranteed by resource.setrlimit.
+    This function explicitly returns False with an OS limitation notice on unsupported platforms
+    so callers do not falsely claim memory enforcement.
+    """
+    if max_memory_mb is None:
+        return False, "Invalid memory limit configuration: limit cannot be None"
+    try:
+        limit_mb = int(max_memory_mb)
+        if limit_mb <= 0:
+            return False, f"Invalid memory limit configuration: {max_memory_mb} MB must be positive"
+    except (ValueError, TypeError) as e:
+        return False, f"Invalid memory limit configuration: {e}"
+
+    bytes_limit = limit_mb * 1024 * 1024
+
+    if resource is None or not hasattr(resource, 'RLIMIT_AS'):
+        return False, "OS memory limit enforcement (RLIMIT_AS) unavailable on this platform"
+
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        if hard != resource.RLIM_INFINITY:
+            new_hard = min(bytes_limit, hard)
+        else:
+            new_hard = bytes_limit
+        new_soft = min(bytes_limit, new_hard)
+
+        resource.setrlimit(resource.RLIMIT_AS, (new_soft, new_hard))
+
+        cur_soft, _ = resource.getrlimit(resource.RLIMIT_AS)
+        if cur_soft != new_soft:
+            return False, f"OS error enforcing memory limit: soft limit mismatched ({cur_soft} != {new_soft})"
+        return True, "Enforced"
+    except Exception as e:
+        return False, f"OS error enforcing memory limit: {e}"
+
+def _sandbox_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb):
+    """Worker process target executed in process isolation."""
+    try:
+        mem_ok, mem_msg = _set_memory_limit(max_memory_mb)
+        if not mem_ok:
+            # Fail closed: reject sandbox execution whenever OS memory enforcement cannot be applied
+            pipe_conn.send(("error", f"Sandbox memory configuration failure: {mem_msg}"))
+            return
+
+        from core.plugin_system import PluginLoader
+        from core.engine import Engine
+
+        loader = PluginLoader()
+        loader.load_all()
+
+        plugin = loader.get_plugin(plugin_id)
+        if not plugin:
+            for p_id in list(loader.plugins.keys()):
+                if p_id == plugin_id or p_id.startswith(plugin_id) or plugin_id in p_id:
+                    p_cand = loader.get_plugin(p_id)
+                    if p_cand:
+                        plugin = p_cand
+                        break
+
+        if not plugin:
+            pipe_conn.send(("not_found", f"Plugin nem található: {plugin_id}"))
+            return
+
+        if params and isinstance(params, dict):
+            for k, v in params.items():
+                if hasattr(plugin, "set_param"):
+                    try:
+                        plugin.set_param(k, v)
+                    except Exception:
+                        pass
+
+        if array is None:
+            if hasattr(plugin, "generate_input") and callable(plugin.generate_input):
+                try:
+                    array = plugin.generate_input()
+                except Exception:
+                    array = [5, 3, 8, 1]
+            else:
+                array = [5, 3, 8, 1]
+
+        engine = Engine()
+        engine.set_plugin(plugin, array)
+        engine.generate_steps(array)
+        raw_steps = engine.steps
+
+        serialized_steps = [_serialize_val(s) for s in raw_steps]
+        pipe_conn.send(("ok", (plugin.id, getattr(plugin, "name", plugin.id), array, serialized_steps)))
+    except MemoryError:
+        pipe_conn.send(("error", "Memory limit exceeded in sandbox process"))
+    except Exception as e:
+        pipe_conn.send(("error", str(e)))
+    finally:
         try:
-            res = func()
-            result.append(res)
-        except Exception as e:
-            exception.append(e)
+            pipe_conn.close()
+        except Exception:
+            pass
 
-    t = threading.Thread(target=target)
-    t.daemon = True
-    t.start()
-    t.join(timeout)
+def _ensure_worker_terminated(proc: multiprocessing.Process, timeout: float = 1.0) -> bool:
+    """
+    Consistently and reliably terminates a worker process across all paths.
+    Attempts terminate(), waits up to `timeout`, escalates to kill() if necessary,
+    and returns True iff the process is confirmed no longer alive.
+    """
+    if proc is None:
+        return True
+    try:
+        proc.join(timeout=0.05)
+        if not proc.is_alive():
+            return True
 
-    if t.is_alive():
-        return None, "Sandbox timeout: a futtatási idő túllépte a korlátot"
-    if exception:
-        return None, str(exception[0])
-    return (result[0] if result else []), None
+        proc.terminate()
+        proc.join(timeout=timeout)
+        if not proc.is_alive():
+            return True
+
+        if hasattr(proc, 'kill'):
+            proc.kill()
+            proc.join(timeout=timeout)
+
+        return not proc.is_alive()
+    except Exception:
+        return not proc.is_alive()
+
+def _run_in_sandbox_process(plugin_id: str, params: Optional[dict], array: Optional[list],
+                            max_memory_mb: int = 256, timeout_sec: int = 10,
+                            target_func=None, pid_callback=None) -> tuple:
+    """
+    Executes a plugin or target function in a separate, isolated worker process with
+    strict timeout and optional memory limits.
+    """
+    try:
+        if sys.platform != "win32" and "forkserver" in multiprocessing.get_all_start_methods():
+            ctx = multiprocessing.get_context("forkserver")
+        elif sys.platform != "win32" and "spawn" in multiprocessing.get_all_start_methods():
+            ctx = multiprocessing.get_context("spawn")
+        else:
+            ctx = multiprocessing.get_context()
+    except Exception:
+        ctx = multiprocessing.get_context()
+
+    # Sanitize timeout
+    try:
+        eff_timeout = float(timeout_sec) if timeout_sec is not None and float(timeout_sec) > 0 else 10.0
+    except Exception:
+        eff_timeout = 10.0
+
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+
+    worker_func = target_func if target_func is not None else _sandbox_worker_target
+    proc = ctx.Process(
+        target=worker_func,
+        args=(child_conn, plugin_id, params, array, max_memory_mb),
+        daemon=True
+    )
+
+    try:
+        proc.start()
+        child_conn.close()  # Close child end in parent process
+
+        if callable(pid_callback) and proc.pid is not None:
+            try:
+                pid_callback(proc.pid)
+            except Exception:
+                pass
+
+        start_time = time.time()
+        got_result = False
+        res_data = None
+
+        while time.time() - start_time < eff_timeout:
+            if parent_conn.poll(0.05):
+                try:
+                    res_data = parent_conn.recv()
+                    got_result = True
+                except (EOFError, OSError):
+                    got_result = False
+                break
+            if not proc.is_alive():
+                # Process exited prior to timeout
+                if parent_conn.poll(0.01):
+                    try:
+                        res_data = parent_conn.recv()
+                        got_result = True
+                    except (EOFError, OSError):
+                        got_result = False
+                break
+
+        if got_result and res_data is not None:
+            proc.join(timeout=1.0)
+            if proc.is_alive():
+                # Worker sent result but refused to exit within defined cleanup interval
+                cleaned = _ensure_worker_terminated(proc, timeout=1.0)
+                if not cleaned:
+                    return None, f"Sandbox process error: worker (PID {proc.pid}) could not be terminated"
+                return None, "Sandbox process error: worker remained alive after sending result"
+
+            status, payload = res_data
+            if status == "ok":
+                return payload, None
+            elif status == "not_found":
+                return None, f"NOT_FOUND:{payload}"
+            else:
+                return None, payload
+
+        # Give process a brief moment to join if it just closed the pipe / exited
+        proc.join(timeout=0.1)
+
+        if proc.is_alive():
+            # Process is STILL alive after deadline / pipe EOF -> TRUE TIMEOUT
+            cleaned = _ensure_worker_terminated(proc, timeout=1.0)
+            if not cleaned:
+                return None, f"Sandbox timeout error: timed-out worker (PID {proc.pid}) could not be terminated"
+            return None, "Sandbox timeout: a futtatási idő túllépte a korlátot"
+
+        # Process exited before deadline without producing result -> ABNORMAL EXIT / OOM
+        code = proc.exitcode
+        return None, f"Sandbox process exited abnormally with code {code}"
+    except Exception as e:
+        cleaned = _ensure_worker_terminated(proc, timeout=1.0)
+        if not cleaned:
+            return None, f"Sandbox execution error: {e} (worker PID {proc.pid} remaining alive)"
+        return None, f"Sandbox execution error: {e}"
+    finally:
+        try:
+            parent_conn.close()
+        except Exception:
+            pass
+        try:
+            if hasattr(proc, 'close'):
+                proc.close()
+        except Exception:
+            pass
 
 class SecureRESTHandler(BaseHTTPRequestHandler):
     api_manager = None
@@ -309,58 +535,44 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Hiányzó plugin_id", 400)
                 return
 
-            plugin = None
-            if self.plugin_loader:
-                plugin = self.plugin_loader.get_plugin(plugin_id)
-                if not plugin:
-                    for p_id in list(self.plugin_loader.plugins.keys()):
-                        if p_id == plugin_id or p_id.startswith(plugin_id) or plugin_id in p_id:
-                            p_cand = self.plugin_loader.get_plugin(p_id)
-                            if p_cand:
-                                plugin = p_cand
-                                break
-            
-            if not plugin:
-                self.send_error_json(f"Plugin nem található: {plugin_id}", 404)
-                return
-
             params = data.get("params")
-            if params and isinstance(params, dict):
-                for k, v in params.items():
-                    if hasattr(plugin, "set_param"):
-                        try:
-                            plugin.set_param(k, v)
-                        except Exception:
-                            pass
-
             array = data.get("array")
-            if array is None:
-                if hasattr(plugin, "generate_input") and callable(plugin.generate_input):
-                    try:
-                        array = plugin.generate_input()
-                    except Exception:
-                        array = [5, 3, 8, 1]
-                else:
-                    array = [5, 3, 8, 1]
-
-            def run_func():
-                if self.engine:
-                    self.engine.set_plugin(plugin, array)
-                    self.engine.generate_steps(array)
-                    return self.engine.steps
-                else:
-                    return list(plugin.get_steps(array))
 
             if self.rest_config and self.rest_config.enable_sandbox:
                 timeout_sec = getattr(self.rest_config, "sandbox_timeout_sec", 10)
-                raw_steps, err = _run_with_timeout(run_func, timeout=timeout_sec)
+                max_memory_mb = getattr(self.rest_config, "sandbox_max_memory_mb", 256)
+                res_tuple, err = _run_in_sandbox_process(
+                    plugin_id=plugin_id,
+                    params=params,
+                    array=array,
+                    max_memory_mb=max_memory_mb,
+                    timeout_sec=timeout_sec
+                )
                 if err:
+                    if str(err).startswith("NOT_FOUND:"):
+                        self.send_error_json(err.replace("NOT_FOUND:", ""), 404)
+                        return
                     status = 408 if "timeout" in str(err).lower() else 500
                     self.send_error_json(f"Futtatási hiba / Sandbox: {err}", status)
                     return
+                p_id, p_name, ret_array, raw_steps = res_tuple
             else:
+                plugin = None
+                if self.plugin_loader:
+                    plugin = self.plugin_loader.get_plugin(plugin_id)
+                if not plugin:
+                    self.send_error_json(f"Plugin nem található: {plugin_id}", 404)
+                    return
                 try:
-                    raw_steps = run_func()
+                    ret_array = array or [5, 3, 8, 1]
+                    if self.engine:
+                        self.engine.set_plugin(plugin, ret_array)
+                        self.engine.generate_steps(ret_array)
+                        raw_steps = self.engine.steps
+                    else:
+                        raw_steps = list(plugin.get_steps(ret_array))
+                    p_id = plugin.id
+                    p_name = getattr(plugin, "name", plugin.id)
                 except Exception as e:
                     self.send_error_json(f"Futtatási hiba: {e}", 500)
                     return
@@ -373,9 +585,9 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             serialized_steps = [_serialize_val(s) for s in limited_steps]
 
             self.send_json({
-                "plugin_id": plugin.id,
-                "plugin_name": getattr(plugin, "name", plugin.id),
-                "array": array,
+                "plugin_id": p_id,
+                "plugin_name": p_name,
+                "array": ret_array or [],
                 "steps_count": len(serialized_steps),
                 "total_steps": total_steps,
                 "truncated": total_steps > 200,
