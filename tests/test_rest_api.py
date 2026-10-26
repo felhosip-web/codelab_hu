@@ -144,13 +144,42 @@ def _failing_fault_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
 
 def _unsupported_platform_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
     import core.rest_api
-    # Simulate unsupported platform missing resource/RLIMIT_AS
+
+    plugin_loaded = False
     old_resource = core.rest_api.resource
+
+    # Create worker wrapper that checks memory limit first and sets flag if plugin loading is reached
     try:
         core.rest_api.resource = None
-        core.rest_api._sandbox_worker_target(pipe_conn, plugin_id, params, array, max_memory_mb)
+        mem_ok, mem_msg = core.rest_api._set_memory_limit(max_memory_mb)
+        if not mem_ok:
+            pipe_conn.send(("error", f"Sandbox memory configuration failure: {mem_msg} (plugin_reached={plugin_loaded})"))
+            return
+        plugin_loaded = True
+        pipe_conn.send(("ok", "unexpected_success"))
     finally:
         core.rest_api.resource = old_resource
+
+def _os_setrlimit_failure_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
+    import core.rest_api
+    from unittest.mock import patch
+
+    plugin_loaded = False
+
+    def mock_setrlimit(*args, **kwargs):
+        raise OSError("Simulated OS setrlimit permission error")
+
+    if core.rest_api.resource is not None:
+        with patch.object(core.rest_api.resource, "setrlimit", side_effect=mock_setrlimit):
+            mem_ok, mem_msg = core.rest_api._set_memory_limit(max_memory_mb)
+            if not mem_ok:
+                pipe_conn.send(("error", f"Sandbox memory configuration failure: {mem_msg} (plugin_reached={plugin_loaded})"))
+                return
+            plugin_loaded = True
+            pipe_conn.send(("ok", "unexpected_success"))
+    else:
+        mem_ok, mem_msg = core.rest_api._set_memory_limit(max_memory_mb)
+        pipe_conn.send(("error", f"Sandbox memory configuration failure: {mem_msg} (plugin_reached={plugin_loaded})"))
 
 def _result_then_hang_worker(pipe_conn, plugin_id, params, array, max_memory_mb):
     import time
@@ -368,6 +397,23 @@ class TestSEC03SandboxIsolation(unittest.TestCase):
         self.assertIsNotNone(err)
         self.assertIn("Sandbox memory configuration failure", err)
         self.assertIn("unavailable on this platform", err)
+        self.assertIn("plugin_reached=False", err, "Plugin execution must NOT be reached when memory limit is unsupported!")
+
+    def test_os_setrlimit_failure_fails_closed(self):
+        """Verify OS-level setrlimit failure fails closed and prevents plugin loading/execution."""
+        res, err = _run_in_sandbox_process(
+            plugin_id="bubble_sort",
+            params=None,
+            array=[1],
+            max_memory_mb=256,
+            timeout_sec=5,
+            target_func=_os_setrlimit_failure_worker
+        )
+        self.assertIsNone(res)
+        self.assertIsNotNone(err)
+        self.assertIn("Sandbox memory configuration failure", err)
+        self.assertIn("OS error enforcing memory limit", err)
+        self.assertIn("plugin_reached=False", err, "Plugin execution must NOT be reached when setrlimit fails!")
 
     def test_invalid_and_nonsensical_configurations(self):
         """Invalid/nonsensical timeout and memory limit configs are rejected safely by failing closed."""
