@@ -626,6 +626,87 @@ class TestSEC01APIKeyStorage(unittest.TestCase):
         with open(self.keys_path, "r", encoding="utf-8") as f:
             self.assertEqual(f.read(), corrupt_content)
 
+    def test_migration_error_does_not_leak_secret_token_in_logs_or_exceptions(self):
+        """Synthetic secret token used as dictionary key in corrupt legacy file is NEVER printed or leaked in exceptions/logs/stdout/stderr."""
+        import io
+        import sys
+
+        synthetic_secret = "DISTINCTIVE_SYNTHETIC_SECRET_TOKEN_99999"
+        corrupt_legacy_data = {
+            synthetic_secret: "invalid_non_dict_record_content"
+        }
+
+        with open(self.keys_path, "w", encoding="utf-8") as f:
+            json.dump(corrupt_legacy_data, f)
+
+        captured_stdout = io.StringIO()
+        captured_stderr = io.StringIO()
+
+        old_stdout, old_stderr = sys.stdout, sys.stderr
+        try:
+            sys.stdout, sys.stderr = captured_stdout, captured_stderr
+            with self.assertRaises(ValueError) as cm:
+                SecureRESTAPIServer(
+                    config_path=str(self.config_path),
+                    keys_path=str(self.keys_path)
+                )
+            exception_msg = str(cm.exception)
+        finally:
+            sys.stdout, sys.stderr = old_stdout, old_stderr
+
+        stdout_val = captured_stdout.getvalue()
+        stderr_val = captured_stderr.getvalue()
+
+        # Synthetic secret token MUST NOT appear in exception message, stdout, or stderr
+        self.assertNotIn(synthetic_secret, exception_msg)
+        self.assertNotIn(synthetic_secret, stdout_val)
+        self.assertNotIn(synthetic_secret, stderr_val)
+
+        # Original corrupt file remains intact on disk
+        with open(self.keys_path, "r", encoding="utf-8") as f:
+            self.assertIn(synthetic_secret, f.read())
+
+    def test_atomic_save_keys_resilience_to_write_failures(self):
+        """save_keys() atomic write failure does not destroy existing valid key file, and temp files are cleaned up."""
+        from unittest.mock import patch
+
+        initial_key = self.server.create_key("initial_key", permissions=["read"])
+        with open(self.keys_path, "r", encoding="utf-8") as f:
+            initial_content = f.read()
+
+        # Simulate failure during os.replace
+        with patch("os.replace", side_effect=OSError("Simulated disk replace error")):
+            with self.assertRaises(OSError):
+                self.server.create_key("failing_key", permissions=["read"])
+
+        # Original valid file on disk MUST remain untouched
+        with open(self.keys_path, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), initial_content)
+
+        # Ensure no leftover temporary files in keys_path directory
+        temp_files = list(self.keys_path.parent.glob(f".{self.keys_path.name}.tmp_*"))
+        self.assertEqual(len(temp_files), 0, f"Leftover temporary files found: {temp_files}")
+
+    def test_create_key_endpoint_expire_days_validation(self):
+        """Invalid expire_days values in /api/v2/keys return controlled HTTP 400 without unhandled exceptions."""
+        admin_token = self.server.create_key("admin_user", permissions=["admin"])
+        self.server.start()
+        time.sleep(0.05)
+
+        invalid_payloads = [
+            {"name": "k1", "expire_days": "not_a_number"},
+            {"name": "k2", "expire_days": -5},
+            {"name": "k3", "expire_days": 0},
+            {"name": "k4", "expire_days": True},
+            {"name": "k5", "expire_days": [30]}
+        ]
+
+        for payload in invalid_payloads:
+            status, res = self._make_request("/api/v2/keys", method="POST", body=payload, headers={"X-API-Key": admin_token})
+            self.assertEqual(status, 400, f"Payload {payload} should have returned 400")
+            self.assertIn("error", res)
+            self.assertIn("expire_days", res["error"])
+
     def test_revocation_by_raw_token_or_digest(self):
         """revocation works using either raw token or key digest after storage is hashed."""
         key1 = self.server.create_key("key1", permissions=["read"])

@@ -610,6 +610,18 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             
             name = data.get("name", "unnamed")
             perms = data.get("permissions", ["read"])
+
+            expire_days = data.get("expire_days")
+            if expire_days is not None:
+                if isinstance(expire_days, bool) or not isinstance(expire_days, (int, float)) or expire_days <= 0:
+                    self.send_error_json("Érvénytelen expire_days érték: pozitív szám szükséges", 400)
+                    return
+                try:
+                    expire_days = float(expire_days)
+                except (ValueError, TypeError):
+                    self.send_error_json("Érvénytelen expire_days érték: pozitív szám szükséges", 400)
+                    return
+
             new_key = secrets.token_urlsafe(32)
             key_hash = hash_api_key(new_key)
             api_key = APIKey(
@@ -617,7 +629,7 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 name=name,
                 permissions=perms,
                 created_at=datetime.now().isoformat(),
-                expires_at=(datetime.now() + timedelta(days=data["expire_days"])).isoformat() if data.get("expire_days") else None,
+                expires_at=(datetime.now() + timedelta(days=expire_days)).isoformat() if expire_days else None,
                 rate_limit_per_min=data.get("rate_limit", 60),
                 hashed=True
             )
@@ -672,15 +684,15 @@ class SecureRESTAPIServer:
                     data = json.load(f)
 
                 if not isinstance(data, dict):
-                    raise ValueError(f"Invalid API keys format in {self.keys_path}: expected dictionary")
+                    raise ValueError(f"Invalid API keys format in {self.keys_path.name}: expected dictionary")
 
                 migrated = False
                 loaded_keys: Dict[str, APIKey] = {}
                 valid_fields = {f for f in APIKey.__dataclass_fields__}
 
-                for k, info in data.items():
+                for idx, (k, info) in enumerate(data.items()):
                     if not isinstance(info, dict):
-                        raise ValueError(f"Invalid API key record for key '{k}': expected dict, got {type(info)}")
+                        raise ValueError(f"Invalid API key record at index {idx}: expected dictionary record, got {type(info).__name__}")
 
                     filtered_info = {fname: v for fname, v in info.items() if fname in valid_fields}
                     is_hashed = filtered_info.get("hashed") is True
@@ -688,7 +700,7 @@ class SecureRESTAPIServer:
                     if not is_hashed:
                         raw_token = k or filtered_info.get("key")
                         if not raw_token:
-                            raise ValueError(f"Malformed legacy API key record: missing token key")
+                            raise ValueError(f"Malformed legacy API key record at index {idx}: missing token identifier")
                         key_hash = hash_api_key(raw_token)
                         filtered_info["key"] = key_hash
                         filtered_info["hashed"] = True
@@ -696,13 +708,13 @@ class SecureRESTAPIServer:
                     else:
                         key_hash = k or filtered_info.get("key")
                         if not key_hash:
-                            raise ValueError(f"Malformed API key record: missing key digest")
+                            raise ValueError(f"Malformed API key record at index {idx}: missing key digest")
                         filtered_info["key"] = key_hash
 
                     try:
                         api_key_obj = APIKey(**filtered_info)
                     except Exception as e:
-                        raise ValueError(f"Failed to parse APIKey entry for '{k}': {e}")
+                        raise ValueError(f"Failed to parse APIKey entry at index {idx}: {type(e).__name__}")
 
                     loaded_keys[key_hash] = api_key_obj
 
@@ -710,14 +722,29 @@ class SecureRESTAPIServer:
                 if migrated:
                     self.save_keys()
             except Exception as e:
-                print(f"API keys load hiba: {e}")
-                raise
+                # Do NOT log exception details containing raw keys or sensitive data
+                raise ValueError(f"API keys load error in {self.keys_path.name}: {e}") from None
     
     def save_keys(self):
         self.keys_path.parent.mkdir(exist_ok=True)
         data = {k: asdict(v) for k, v in self.api_keys.items()}
-        with open(self.keys_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        temp_path = self.keys_path.parent / f".{self.keys_path.name}.tmp_{secrets.token_hex(8)}"
+        try:
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except (OSError, AttributeError):
+                    pass
+            os.replace(temp_path, self.keys_path)
+        except Exception:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+            raise
     
     def create_key(self, name: str, permissions: List[str] = None, expire_days: int = None, rate_limit: int = 60, ip_whitelist: List[str] = None) -> str:
         if permissions is None:
