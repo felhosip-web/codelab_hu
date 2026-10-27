@@ -6,6 +6,8 @@ import os
 import sys
 import json
 import time
+import math
+import re
 import hashlib
 import secrets
 import multiprocessing
@@ -23,6 +25,16 @@ try:
 except ImportError:
     resource = None
 
+def hash_api_key(token: str) -> str:
+    """Computes SHA-256 digest of an API key token in hex format."""
+    if not token or not isinstance(token, str):
+        return ""
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+def _is_valid_sha256_hex(digest: str) -> bool:
+    """Checks if string is a valid 64-character hex SHA-256 digest."""
+    return isinstance(digest, str) and len(digest) == 64 and bool(re.match(r"^[0-9a-fA-F]{64}$", digest))
+
 @dataclass
 class APIKey:
     key: str
@@ -34,6 +46,7 @@ class APIKey:
     usage_count: int = 0
     ip_whitelist: List[str] = field(default_factory=list)
     rate_limit_per_min: int = 60
+    hashed: bool = True
 
 @dataclass
 class RESTConfig:
@@ -340,6 +353,7 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
     api_manager = None
     rest_config = None
     api_keys: Dict[str, APIKey] = {}
+    server_instance = None
     rate_limiter = RateLimiter()
     plugin_loader = None
     engine = None
@@ -381,10 +395,11 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             if not api_key_value:
                 return (False, "Hiányzó API kulcs (X-API-Key header)", None)
             
-            if api_key_value not in self.api_keys:
+            key_hash = hash_api_key(api_key_value)
+            if key_hash not in self.api_keys:
                 return (False, "Érvénytelen API kulcs", None)
             
-            key_obj = self.api_keys[api_key_value]
+            key_obj = self.api_keys[key_hash]
             
             # Lejárat ellenőrzés
             if key_obj.expires_at:
@@ -400,7 +415,7 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 return (False, f"IP {client_ip} nincs a kulcs whitelistjén", None)
             
             # Rate limit kulcsonként
-            if not self.rate_limiter.is_allowed(f"key:{api_key_value}", key_obj.rate_limit_per_min):
+            if not self.rate_limiter.is_allowed(f"key:{key_hash}", key_obj.rate_limit_per_min):
                 return (False, f"Rate limit túllépve a kulcshoz ({key_obj.rate_limit_per_min}/perc)", None)
             
             # Frissítjük használatot
@@ -601,16 +616,42 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             
             name = data.get("name", "unnamed")
             perms = data.get("permissions", ["read"])
+
+            expire_days = data.get("expire_days")
+            if expire_days is not None:
+                if isinstance(expire_days, bool) or not isinstance(expire_days, (int, float)):
+                    self.send_error_json("Érvénytelen expire_days érték: pozitív szám szükséges", 400)
+                    return
+                try:
+                    expire_days = float(expire_days)
+                    if math.isnan(expire_days) or math.isinf(expire_days) or expire_days <= 0:
+                        self.send_error_json("Érvénytelen expire_days érték: pozitív véges szám szükséges", 400)
+                        return
+                except (ValueError, TypeError):
+                    self.send_error_json("Érvénytelen expire_days érték: pozitív szám szükséges", 400)
+                    return
+
             new_key = secrets.token_urlsafe(32)
+            key_hash = hash_api_key(new_key)
             api_key = APIKey(
-                key=new_key,
+                key=key_hash,
                 name=name,
                 permissions=perms,
                 created_at=datetime.now().isoformat(),
-                expires_at=(datetime.now() + timedelta(days=30)).isoformat() if data.get("expire_days") else None,
-                rate_limit_per_min=data.get("rate_limit", 60)
+                expires_at=(datetime.now() + timedelta(days=expire_days)).isoformat() if expire_days else None,
+                rate_limit_per_min=data.get("rate_limit", 60),
+                hashed=True
             )
-            self.api_keys[new_key] = api_key
+            self.api_keys[key_hash] = api_key
+            srv = getattr(self, 'server_instance', getattr(SecureRESTHandler, 'server_instance', None))
+            if srv:
+                try:
+                    srv.save_keys()
+                except Exception:
+                    if key_hash in self.api_keys:
+                        del self.api_keys[key_hash]
+                    self.send_error_json("API kulcs mentési hiba", 500)
+                    return
             self.send_json({"api_key": new_key, "key_info": asdict(api_key)}, 201)
         
         else:
@@ -656,36 +697,106 @@ class SecureRESTAPIServer:
             try:
                 with open(self.keys_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                for key, info in data.items():
-                    self.api_keys[key] = APIKey(**info)
+
+                if not isinstance(data, dict):
+                    raise ValueError(f"Invalid API keys format in {self.keys_path.name}: expected dictionary")
+
+                migrated = False
+                loaded_keys: Dict[str, APIKey] = {}
+                valid_fields = {f for f in APIKey.__dataclass_fields__}
+
+                for idx, (k, info) in enumerate(data.items()):
+                    if not isinstance(info, dict):
+                        raise ValueError(f"Invalid API key record at index {idx}: expected dictionary record, got {type(info).__name__}")
+
+                    filtered_info = {fname: v for fname, v in info.items() if fname in valid_fields}
+                    is_hashed = filtered_info.get("hashed") is True
+
+                    if is_hashed:
+                        record_key = filtered_info.get("key")
+                        # Validate dictionary key k and record_key are both valid 64-hex SHA-256 digests and equal
+                        if not _is_valid_sha256_hex(k):
+                            raise ValueError(f"Invalid hashed record at index {idx}: dictionary key is not a valid 64-hex SHA-256 digest")
+                        if not _is_valid_sha256_hex(record_key):
+                            raise ValueError(f"Invalid hashed record at index {idx}: key field is not a valid 64-hex SHA-256 digest")
+                        if k.lower() != record_key.lower():
+                            raise ValueError(f"Inconsistent hashed record at index {idx}: dictionary key and record key mismatch")
+                        key_hash = k.lower()
+                        filtered_info["key"] = key_hash
+                    else:
+                        raw_token = k or filtered_info.get("key")
+                        if not raw_token or not isinstance(raw_token, str):
+                            raise ValueError(f"Malformed legacy API key record at index {idx}: missing or invalid token identifier")
+                        key_hash = hash_api_key(raw_token)
+                        filtered_info["key"] = key_hash
+                        filtered_info["hashed"] = True
+                        migrated = True
+
+                    try:
+                        api_key_obj = APIKey(**filtered_info)
+                    except Exception as e:
+                        raise ValueError(f"Failed to parse APIKey entry at index {idx}: {type(e).__name__}")
+
+                    loaded_keys[key_hash] = api_key_obj
+
+                self.api_keys = loaded_keys
+                if migrated:
+                    self.save_keys()
             except Exception as e:
-                print(f"API keys load hiba: {e}")
+                # Do NOT log exception details containing raw keys or sensitive data
+                raise ValueError(f"API keys load error in {self.keys_path.name}: {e}") from None
     
     def save_keys(self):
         self.keys_path.parent.mkdir(exist_ok=True)
         data = {k: asdict(v) for k, v in self.api_keys.items()}
-        with open(self.keys_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        temp_path = self.keys_path.parent / f".{self.keys_path.name}.tmp_{secrets.token_hex(8)}"
+        try:
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except (OSError, AttributeError):
+                    pass
+            os.replace(temp_path, self.keys_path)
+        except Exception:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+            raise
     
     def create_key(self, name: str, permissions: List[str] = None, expire_days: int = None, rate_limit: int = 60, ip_whitelist: List[str] = None) -> str:
         if permissions is None:
             permissions = ["read"]
         new_key = secrets.token_urlsafe(32)
+        key_hash = hash_api_key(new_key)
         api_key = APIKey(
-            key=new_key,
+            key=key_hash,
             name=name,
             permissions=permissions,
             created_at=datetime.now().isoformat(),
             expires_at=(datetime.now() + timedelta(days=expire_days)).isoformat() if expire_days else None,
             rate_limit_per_min=rate_limit,
-            ip_whitelist=ip_whitelist or []
+            ip_whitelist=ip_whitelist or [],
+            hashed=True
         )
-        self.api_keys[new_key] = api_key
-        self.save_keys()
+        self.api_keys[key_hash] = api_key
+        try:
+            self.save_keys()
+        except Exception:
+            if key_hash in self.api_keys:
+                del self.api_keys[key_hash]
+            raise
         return new_key
     
     def revoke_key(self, key: str):
-        if key in self.api_keys:
+        target_hash = hash_api_key(key)
+        if target_hash in self.api_keys:
+            del self.api_keys[target_hash]
+            self.save_keys()
+        elif key in self.api_keys:
             del self.api_keys[key]
             self.save_keys()
     
@@ -703,6 +814,7 @@ class SecureRESTAPIServer:
         # Beállítjuk a handler osztály változóit
         SecureRESTHandler.rest_config = self.config
         SecureRESTHandler.api_keys = self.api_keys
+        SecureRESTHandler.server_instance = self
         SecureRESTHandler.plugin_loader = self.plugin_loader
         SecureRESTHandler.engine = self.engine
         
