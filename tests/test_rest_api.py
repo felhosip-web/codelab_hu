@@ -687,6 +687,61 @@ class TestSEC01APIKeyStorage(unittest.TestCase):
         temp_files = list(self.keys_path.parent.glob(f".{self.keys_path.name}.tmp_*"))
         self.assertEqual(len(temp_files), 0, f"Leftover temporary files found: {temp_files}")
 
+    def test_malformed_sha256_digest_rejection_and_file_preservation(self):
+        """Dedicated test: records marked hashed=True with malformed SHA-256 digests fail load_keys(), leaving file byte-for-byte unchanged and zero secret leakage."""
+        import io
+        import sys
+
+        synthetic_secret = "MALFORMED_DIGEST_SECRET_98765"
+
+        malformed_cases = [
+            # Case A: 63 hex chars (too short)
+            {"key_str": "a" * 63, "rec_key": "a" * 63},
+            # Case B: 65 hex chars (too long)
+            {"key_str": "b" * 65, "rec_key": "b" * 65},
+            # Case C: 64 chars with non-hex character 'Z'
+            {"key_str": "c" * 63 + "Z", "rec_key": "c" * 63 + "Z"},
+            # Case D: raw string token as key
+            {"key_str": synthetic_secret, "rec_key": synthetic_secret}
+        ]
+
+        for idx, m_case in enumerate(malformed_cases):
+            raw_key_str = m_case["key_str"]
+            rec_key_val = m_case["rec_key"]
+
+            data = {
+                raw_key_str: {
+                    "key": rec_key_val,
+                    "name": f"malformed_rec_{idx}",
+                    "permissions": ["read"],
+                    "created_at": datetime.now().isoformat(),
+                    "hashed": True
+                }
+            }
+
+            expected_bytes = json.dumps(data, indent=2).encode("utf-8")
+            with open(self.keys_path, "wb") as f:
+                f.write(expected_bytes)
+
+            cap_out, cap_err = io.StringIO(), io.StringIO()
+            old_out, old_err = sys.stdout, sys.stderr
+            try:
+                sys.stdout, sys.stderr = cap_out, cap_err
+                with self.assertRaises(ValueError) as cm:
+                    SecureRESTAPIServer(config_path=str(self.config_path), keys_path=str(self.keys_path))
+                err_msg = str(cm.exception)
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+
+            # 1. Zero secret leak
+            self.assertNotIn(synthetic_secret, err_msg)
+            self.assertNotIn(synthetic_secret, cap_out.getvalue())
+            self.assertNotIn(synthetic_secret, cap_err.getvalue())
+
+            # 2. File byte-for-byte unchanged on disk
+            with open(self.keys_path, "rb") as f:
+                self.assertEqual(f.read(), expected_bytes)
+
     def test_strict_digest_validation_and_tampered_records(self):
         """Strictly validates SHA-256 digests in load_keys(); rejects raw tokens, mismatched keys, and corrupt digests without overwriting disk file."""
         import io
@@ -798,10 +853,14 @@ class TestSEC01APIKeyStorage(unittest.TestCase):
         self.assertEqual(s2, 200)
 
     def test_create_key_endpoint_expire_days_validation(self):
-        """Invalid expire_days values (including NaN, +Inf, -Inf) in /api/v2/keys return controlled HTTP 400."""
+        """Strengthened: Every invalid expire_days input returns HTTP 400, leaves in-memory key count unchanged, and leaves disk key file byte-for-byte identical."""
         admin_token = self.server.create_key("admin_user", permissions=["admin"])
         self.server.start()
         time.sleep(0.05)
+
+        initial_count = len(self.server.api_keys)
+        with open(self.keys_path, "rb") as f:
+            initial_file_bytes = f.read()
 
         invalid_payloads = [
             {"name": "k1", "expire_days": "not_a_number"},
@@ -819,6 +878,13 @@ class TestSEC01APIKeyStorage(unittest.TestCase):
             self.assertEqual(status, 400, f"Payload {payload} should have returned 400")
             self.assertIn("error", res)
             self.assertIn("expire_days", res["error"])
+
+            # Assert in-memory key count remains unchanged
+            self.assertEqual(len(self.server.api_keys), initial_count, f"Key count changed for payload {payload}")
+
+            # Assert persisted key file on disk remains byte-for-byte identical
+            with open(self.keys_path, "rb") as f:
+                self.assertEqual(f.read(), initial_file_bytes, f"Key file altered on disk for payload {payload}")
 
     def test_create_key_persistence_failure_rollback(self):
         """If save_keys() fails during create_key(), in-memory key state is rolled back and error is returned."""
