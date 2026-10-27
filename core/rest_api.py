@@ -366,13 +366,27 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             with open(log_path, 'a', encoding='utf-8') as f:
                 f.write(f"{datetime.now().isoformat()} {self.client_address[0]} {format % args}\n")
     
+    def _get_cors_origin(self) -> Optional[str]:
+        if not (self.rest_config and self.rest_config.enable_cors):
+            return None
+        req_origin = self.headers.get('Origin') or self.headers.get('origin')
+        if not req_origin or not isinstance(req_origin, str):
+            return None
+        allowed_origins = self.rest_config.cors_origins or []
+        if req_origin in allowed_origins:
+            return req_origin
+        return None
+
     def do_OPTIONS(self):
         # CORS preflight
         if self.rest_config and self.rest_config.enable_cors:
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', ', '.join(self.rest_config.cors_origins))
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key')
+            self.send_header('Vary', 'Origin')
+            matched_origin = self._get_cors_origin()
+            if matched_origin:
+                self.send_header('Access-Control-Allow-Origin', matched_origin)
+                self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+                self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key')
             self.end_headers()
         else:
             self.send_response(403)
@@ -448,7 +462,10 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         if self.rest_config and self.rest_config.enable_cors:
-            self.send_header('Access-Control-Allow-Origin', ', '.join(self.rest_config.cors_origins))
+            self.send_header('Vary', 'Origin')
+            matched_origin = self._get_cors_origin()
+            if matched_origin:
+                self.send_header('Access-Control-Allow-Origin', matched_origin)
         self.end_headers()
         self.wfile.write(json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8'))
     

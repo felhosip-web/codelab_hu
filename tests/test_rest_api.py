@@ -980,5 +980,172 @@ class TestSEC01APIKeyStorage(unittest.TestCase):
             self.assertNotIn(raw_token, log_contents)
             self.assertNotIn("invalid_token_xyz", log_contents)
 
+class TestSEC02CORSValidation(unittest.TestCase):
+    """
+    Automated regression tests covering SEC-02 requirements for CORS Origin Validation and Response Headers:
+    1. Allowed Origin receives exactly its matching Access-Control-Allow-Origin value.
+    2. Multiple configured allowed origins result in only the requesting Origin being returned.
+    3. Disallowed Origin is not reflected or granted access.
+    4. Missing Origin does not cause a permissive fallback.
+    5. OPTIONS preflight from allowed Origin receives valid CORS headers, methods, and request headers without requiring API key.
+    6. Disallowed or missing Origin preflight receives no permissive CORS headers.
+    7. CORS-disabled mode does not emit CORS permission headers.
+    8. Actual protected requests enforce API key and permission checks (CORS cannot bypass auth).
+    9. Vary: Origin header included on CORS-enabled responses.
+    """
+
+    def setUp(self):
+        self.config_path = Path("saves/test_sec02_config.json")
+        self.keys_path = Path("saves/test_sec02_keys.json")
+
+        self.server = SecureRESTAPIServer(
+            config_path=str(self.config_path),
+            keys_path=str(self.keys_path)
+        )
+        self.server.config.enabled = True
+        self.server.config.host = "127.0.0.1"
+        self.server.config.port = 8890
+        self.server.config.require_api_key = True
+        self.server.config.enable_cors = True
+        self.server.config.cors_origins = ["http://localhost:3000", "https://app.example.com"]
+
+        self.read_key = self.server.create_key("read_key", permissions=["read"])
+        self.exec_key = self.server.create_key("exec_key", permissions=["read", "execute"])
+
+        self.server.start()
+        time.sleep(0.05)
+
+    def tearDown(self):
+        if self.server.is_running():
+            self.server.stop()
+        for p in [self.config_path, self.keys_path]:
+            if p.exists():
+                p.unlink()
+
+    def _make_raw_request(self, path, method="GET", body=None, headers=None):
+        url = f"http://127.0.0.1:8890{path}"
+        req_headers = headers or {}
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+
+        if body is not None and "Content-Type" not in req_headers:
+            req_headers["Content-Type"] = "application/json"
+
+        req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                res_body = resp.read().decode("utf-8")
+                resp_headers = {k.lower(): v for k, v in resp.headers.items()}
+                try:
+                    parsed = json.loads(res_body)
+                except Exception:
+                    parsed = res_body
+                return resp.status, resp_headers, parsed
+        except urllib.error.HTTPError as e:
+            res_body = e.read().decode("utf-8")
+            resp_headers = {k.lower(): v for k, v in e.headers.items()}
+            try:
+                parsed = json.loads(res_body)
+            except Exception:
+                parsed = res_body
+            return e.code, resp_headers, parsed
+
+    def test_allowed_origin_returns_exact_match_and_vary_header(self):
+        """1 & 9. An allowed Origin receives exactly its matching Access-Control-Allow-Origin value and Vary: Origin."""
+        headers = {"X-API-Key": self.read_key, "Origin": "http://localhost:3000"}
+        status, resp_headers, res = self._make_raw_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(resp_headers.get("access-control-allow-origin"), "http://localhost:3000")
+        self.assertEqual(resp_headers.get("vary"), "Origin")
+
+    def test_multiple_origins_returns_only_matching_origin(self):
+        """2. Multiple configured allowed origins result in only the request's matching Origin being returned."""
+        headers = {"X-API-Key": self.read_key, "Origin": "https://app.example.com"}
+        status, resp_headers, res = self._make_raw_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(resp_headers.get("access-control-allow-origin"), "https://app.example.com")
+        self.assertNotIn(",", resp_headers.get("access-control-allow-origin", ""))
+
+    def test_disallowed_origin_not_reflected_or_granted_access(self):
+        """3. A disallowed Origin is not reflected or granted access."""
+        headers = {"X-API-Key": self.read_key, "Origin": "https://malicious.attacker.com"}
+        status, resp_headers, res = self._make_raw_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertNotIn("access-control-allow-origin", resp_headers)
+        self.assertEqual(resp_headers.get("vary"), "Origin")
+
+    def test_missing_origin_does_not_cause_permissive_fallback(self):
+        """4. A missing Origin does not cause a permissive fallback."""
+        headers = {"X-API-Key": self.read_key}
+        status, resp_headers, res = self._make_raw_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertNotIn("access-control-allow-origin", resp_headers)
+
+    def test_options_preflight_allowed_origin_no_api_key_required(self):
+        """5. OPTIONS preflight from allowed Origin receives valid CORS headers, methods, and headers without API key."""
+        headers = {"Origin": "http://localhost:3000"}
+        status, resp_headers, res = self._make_raw_request("/api/v2/run", method="OPTIONS", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(resp_headers.get("access-control-allow-origin"), "http://localhost:3000")
+        self.assertEqual(resp_headers.get("access-control-allow-methods"), "GET, POST, OPTIONS")
+        self.assertEqual(resp_headers.get("access-control-allow-headers"), "Content-Type, X-API-Key")
+        self.assertEqual(resp_headers.get("vary"), "Origin")
+
+    def test_options_preflight_disallowed_or_missing_origin(self):
+        """6. A disallowed or missing Origin preflight receives no permissive CORS headers."""
+        headers = {"Origin": "https://disallowed.org"}
+        status, resp_headers, res = self._make_raw_request("/api/v2/run", method="OPTIONS", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertNotIn("access-control-allow-origin", resp_headers)
+        self.assertNotIn("access-control-allow-methods", resp_headers)
+        self.assertNotIn("access-control-allow-headers", resp_headers)
+
+        # Missing origin
+        status_no_orig, resp_headers_no_orig, _ = self._make_raw_request("/api/v2/run", method="OPTIONS")
+        self.assertEqual(status_no_orig, 200)
+        self.assertNotIn("access-control-allow-origin", resp_headers_no_orig)
+        self.assertNotIn("access-control-allow-methods", resp_headers_no_orig)
+        self.assertNotIn("access-control-allow-headers", resp_headers_no_orig)
+
+    def test_cors_disabled_mode_emits_no_cors_headers(self):
+        """7. CORS-disabled mode does not emit CORS permission headers."""
+        self.server.config.enable_cors = False
+
+        # Preflight returns 403 when CORS disabled
+        headers = {"Origin": "http://localhost:3000"}
+        status, resp_headers, _ = self._make_raw_request("/api/v2/run", method="OPTIONS", headers=headers)
+        self.assertEqual(status, 403)
+        self.assertNotIn("access-control-allow-origin", resp_headers)
+
+        # Regular response emits no CORS headers
+        req_headers = {"X-API-Key": self.read_key, "Origin": "http://localhost:3000"}
+        status, resp_headers, _ = self._make_raw_request("/api/v2/status", headers=req_headers)
+        self.assertEqual(status, 200)
+        self.assertNotIn("access-control-allow-origin", resp_headers)
+        self.assertNotIn("vary", resp_headers)
+
+    def test_protected_requests_enforce_api_key_and_permissions(self):
+        """8. Actual protected requests still enforce API key and permission checks; CORS does not bypass server-side authorization."""
+        headers = {"Origin": "http://localhost:3000"}  # Allowed origin, but NO API key
+
+        # GET status without API key -> 403
+        status, resp_headers, res = self._make_raw_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 403)
+        self.assertIn("error", res)
+        self.assertEqual(resp_headers.get("access-control-allow-origin"), "http://localhost:3000")
+
+        # POST run with read-only key (lacks execute permission) -> 403
+        exec_headers = {"X-API-Key": self.read_key, "Origin": "http://localhost:3000"}
+        status, resp_headers, res = self._make_raw_request("/api/v2/run", method="POST", body={"plugin_id": "bubble_sort"}, headers=exec_headers)
+        self.assertEqual(status, 403)
+        self.assertIn("error", res)
+        self.assertEqual(resp_headers.get("access-control-allow-origin"), "http://localhost:3000")
+
+    def test_no_credentials_header_emitted(self):
+        """Access-Control-Allow-Credentials header is never emitted."""
+        headers = {"X-API-Key": self.read_key, "Origin": "http://localhost:3000"}
+        status, resp_headers, res = self._make_raw_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertNotIn("access-control-allow-credentials", resp_headers)
+
 if __name__ == "__main__":
     unittest.main()
