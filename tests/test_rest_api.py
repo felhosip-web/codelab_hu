@@ -687,8 +687,118 @@ class TestSEC01APIKeyStorage(unittest.TestCase):
         temp_files = list(self.keys_path.parent.glob(f".{self.keys_path.name}.tmp_*"))
         self.assertEqual(len(temp_files), 0, f"Leftover temporary files found: {temp_files}")
 
+    def test_strict_digest_validation_and_tampered_records(self):
+        """Strictly validates SHA-256 digests in load_keys(); rejects raw tokens, mismatched keys, and corrupt digests without overwriting disk file."""
+        import io
+        import sys
+
+        synthetic_secret = "SECRET_LEAK_TEST_TOKEN_12345"
+        valid_raw = "valid_raw_token_xyz"
+        valid_hash = hash_api_key(valid_raw)
+
+        # 1. Record marked hashed=True but with raw token as dict key
+        bad_hash_key_data = {
+            synthetic_secret: {
+                "key": synthetic_secret,
+                "name": "fake_hashed",
+                "permissions": ["read"],
+                "created_at": datetime.now().isoformat(),
+                "hashed": True
+            }
+        }
+
+        # Write bad file
+        with open(self.keys_path, "w", encoding="utf-8") as f:
+            json.dump(bad_hash_key_data, f)
+
+        cap_out, cap_err = io.StringIO(), io.StringIO()
+        old_out, old_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout, sys.stderr = cap_out, cap_err
+            with self.assertRaises(ValueError) as cm:
+                SecureRESTAPIServer(config_path=str(self.config_path), keys_path=str(self.keys_path))
+            err_msg = str(cm.exception)
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+
+        # Assert zero secret leak
+        self.assertNotIn(synthetic_secret, err_msg)
+        self.assertNotIn(synthetic_secret, cap_out.getvalue())
+        self.assertNotIn(synthetic_secret, cap_err.getvalue())
+
+        # Assert file byte-for-byte unchanged
+        with open(self.keys_path, "r", encoding="utf-8") as f:
+            self.assertIn(synthetic_secret, f.read())
+
+        # 2. Record dict key and "key" field mismatch
+        mismatched_data = {
+            valid_hash: {
+                "key": "0000000000000000000000000000000000000000000000000000000000000000",
+                "name": "mismatch",
+                "permissions": ["read"],
+                "created_at": datetime.now().isoformat(),
+                "hashed": True
+            }
+        }
+        with open(self.keys_path, "w", encoding="utf-8") as f:
+            json.dump(mismatched_data, f)
+
+        with self.assertRaises(ValueError):
+            SecureRESTAPIServer(config_path=str(self.config_path), keys_path=str(self.keys_path))
+
+    def test_mixed_legacy_and_valid_hashed_records_migration(self):
+        """Mixed file with valid legacy plaintext and valid hashed records loads, migrates legacy, and preserves all keys."""
+        legacy_raw = "legacy_token_mix_111"
+        legacy_hash = hash_api_key(legacy_raw)
+
+        hashed_raw = "already_hashed_token_222"
+        hashed_digest = hash_api_key(hashed_raw)
+
+        mixed_data = {
+            legacy_raw: {
+                "key": legacy_raw,
+                "name": "legacy_part",
+                "permissions": ["read"],
+                "created_at": datetime.now().isoformat(),
+                "hashed": False
+            },
+            hashed_digest: {
+                "key": hashed_digest,
+                "name": "hashed_part",
+                "permissions": ["read", "execute"],
+                "created_at": datetime.now().isoformat(),
+                "hashed": True
+            }
+        }
+
+        with open(self.keys_path, "w", encoding="utf-8") as f:
+            json.dump(mixed_data, f, indent=2)
+
+        srv = SecureRESTAPIServer(config_path=str(self.config_path), keys_path=str(self.keys_path))
+        srv.config.enabled = True
+        srv.config.port = 8889
+        self.assertEqual(len(srv.api_keys), 2)
+        self.assertIn(legacy_hash, srv.api_keys)
+        self.assertIn(hashed_digest, srv.api_keys)
+
+        # Confirm migration persisted
+        with open(self.keys_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertNotIn(legacy_raw, saved)
+        self.assertIn(legacy_hash, saved)
+        self.assertIn(hashed_digest, saved)
+
+        # Both tokens work
+        srv.start()
+        time.sleep(0.05)
+        s1, _ = self._make_request("/api/v2/status", headers={"X-API-Key": legacy_raw})
+        s2, _ = self._make_request("/api/v2/status", headers={"X-API-Key": hashed_raw})
+        srv.stop()
+        self.assertEqual(s1, 200)
+        self.assertEqual(s2, 200)
+
     def test_create_key_endpoint_expire_days_validation(self):
-        """Invalid expire_days values in /api/v2/keys return controlled HTTP 400 without unhandled exceptions."""
+        """Invalid expire_days values (including NaN, +Inf, -Inf) in /api/v2/keys return controlled HTTP 400."""
         admin_token = self.server.create_key("admin_user", permissions=["admin"])
         self.server.start()
         time.sleep(0.05)
@@ -698,7 +808,10 @@ class TestSEC01APIKeyStorage(unittest.TestCase):
             {"name": "k2", "expire_days": -5},
             {"name": "k3", "expire_days": 0},
             {"name": "k4", "expire_days": True},
-            {"name": "k5", "expire_days": [30]}
+            {"name": "k5", "expire_days": [30]},
+            {"name": "k6", "expire_days": float("nan")},
+            {"name": "k7", "expire_days": float("inf")},
+            {"name": "k8", "expire_days": float("-inf")}
         ]
 
         for payload in invalid_payloads:
@@ -706,6 +819,27 @@ class TestSEC01APIKeyStorage(unittest.TestCase):
             self.assertEqual(status, 400, f"Payload {payload} should have returned 400")
             self.assertIn("error", res)
             self.assertIn("expire_days", res["error"])
+
+    def test_create_key_persistence_failure_rollback(self):
+        """If save_keys() fails during create_key(), in-memory key state is rolled back and error is returned."""
+        from unittest.mock import patch
+
+        admin_token = self.server.create_key("admin_user", permissions=["admin"])
+        self.server.start()
+        time.sleep(0.05)
+
+        initial_count = len(self.server.api_keys)
+
+        with patch.object(self.server, "save_keys", side_effect=OSError("Simulated save error")):
+            # 1. Direct call
+            with self.assertRaises(OSError):
+                self.server.create_key("fail_key", permissions=["read"])
+            self.assertEqual(len(self.server.api_keys), initial_count)
+
+            # 2. HTTP endpoint call
+            status, res = self._make_request("/api/v2/keys", method="POST", body={"name": "fail_http"}, headers={"X-API-Key": admin_token})
+            self.assertEqual(status, 500)
+            self.assertEqual(len(self.server.api_keys), initial_count)
 
     def test_revocation_by_raw_token_or_digest(self):
         """revocation works using either raw token or key digest after storage is hashed."""

@@ -6,6 +6,8 @@ import os
 import sys
 import json
 import time
+import math
+import re
 import hashlib
 import secrets
 import multiprocessing
@@ -28,6 +30,10 @@ def hash_api_key(token: str) -> str:
     if not token or not isinstance(token, str):
         return ""
     return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+def _is_valid_sha256_hex(digest: str) -> bool:
+    """Checks if string is a valid 64-character hex SHA-256 digest."""
+    return isinstance(digest, str) and len(digest) == 64 and bool(re.match(r"^[0-9a-fA-F]{64}$", digest))
 
 @dataclass
 class APIKey:
@@ -613,11 +619,14 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
 
             expire_days = data.get("expire_days")
             if expire_days is not None:
-                if isinstance(expire_days, bool) or not isinstance(expire_days, (int, float)) or expire_days <= 0:
+                if isinstance(expire_days, bool) or not isinstance(expire_days, (int, float)):
                     self.send_error_json("Érvénytelen expire_days érték: pozitív szám szükséges", 400)
                     return
                 try:
                     expire_days = float(expire_days)
+                    if math.isnan(expire_days) or math.isinf(expire_days) or expire_days <= 0:
+                        self.send_error_json("Érvénytelen expire_days érték: pozitív véges szám szükséges", 400)
+                        return
                 except (ValueError, TypeError):
                     self.send_error_json("Érvénytelen expire_days érték: pozitív szám szükséges", 400)
                     return
@@ -636,7 +645,13 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             self.api_keys[key_hash] = api_key
             srv = getattr(self, 'server_instance', getattr(SecureRESTHandler, 'server_instance', None))
             if srv:
-                srv.save_keys()
+                try:
+                    srv.save_keys()
+                except Exception:
+                    if key_hash in self.api_keys:
+                        del self.api_keys[key_hash]
+                    self.send_error_json("API kulcs mentési hiba", 500)
+                    return
             self.send_json({"api_key": new_key, "key_info": asdict(api_key)}, 201)
         
         else:
@@ -697,19 +712,25 @@ class SecureRESTAPIServer:
                     filtered_info = {fname: v for fname, v in info.items() if fname in valid_fields}
                     is_hashed = filtered_info.get("hashed") is True
 
-                    if not is_hashed:
+                    if is_hashed:
+                        record_key = filtered_info.get("key")
+                        # Validate dictionary key k and record_key are both valid 64-hex SHA-256 digests and equal
+                        if not _is_valid_sha256_hex(k):
+                            raise ValueError(f"Invalid hashed record at index {idx}: dictionary key is not a valid 64-hex SHA-256 digest")
+                        if not _is_valid_sha256_hex(record_key):
+                            raise ValueError(f"Invalid hashed record at index {idx}: key field is not a valid 64-hex SHA-256 digest")
+                        if k.lower() != record_key.lower():
+                            raise ValueError(f"Inconsistent hashed record at index {idx}: dictionary key and record key mismatch")
+                        key_hash = k.lower()
+                        filtered_info["key"] = key_hash
+                    else:
                         raw_token = k or filtered_info.get("key")
-                        if not raw_token:
-                            raise ValueError(f"Malformed legacy API key record at index {idx}: missing token identifier")
+                        if not raw_token or not isinstance(raw_token, str):
+                            raise ValueError(f"Malformed legacy API key record at index {idx}: missing or invalid token identifier")
                         key_hash = hash_api_key(raw_token)
                         filtered_info["key"] = key_hash
                         filtered_info["hashed"] = True
                         migrated = True
-                    else:
-                        key_hash = k or filtered_info.get("key")
-                        if not key_hash:
-                            raise ValueError(f"Malformed API key record at index {idx}: missing key digest")
-                        filtered_info["key"] = key_hash
 
                     try:
                         api_key_obj = APIKey(**filtered_info)
@@ -762,7 +783,12 @@ class SecureRESTAPIServer:
             hashed=True
         )
         self.api_keys[key_hash] = api_key
-        self.save_keys()
+        try:
+            self.save_keys()
+        except Exception:
+            if key_hash in self.api_keys:
+                del self.api_keys[key_hash]
+            raise
         return new_key
     
     def revoke_key(self, key: str):
