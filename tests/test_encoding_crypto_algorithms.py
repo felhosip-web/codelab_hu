@@ -46,6 +46,27 @@ class TestEncodingCryptoAlgorithms(unittest.TestCase):
         final_step = steps[-1]
         self.assertEqual(final_step.extra.get("encoded"), "KHOOR")
 
+    def test_rle_known_answer(self):
+        plugin = self.loader.get_plugin("rle")
+        plugin.set_param("text", "AAAABBBCCDAA")
+        steps = list(plugin.get_steps([]))
+        final_step = steps[-1]
+        self.assertEqual(final_step.extra.get("encoded"), "4A3B2C1D2A")
+
+    def test_huffman_known_answer(self):
+        plugin = self.loader.get_plugin("huffman")
+        steps = list(plugin.get_steps([]))
+        final_step = steps[-1]
+        self.assertIn("codes", final_step.extra)
+        self.assertIn("encoded", final_step.extra)
+
+    def test_enigma_known_answer(self):
+        plugin = self.loader.get_plugin("enigma")
+        steps = list(plugin.get_steps([]))
+        final_step = steps[-1]
+        self.assertIn("encoded", final_step.extra)
+        self.assertTrue(final_step.extra.get("symmetric"))
+
 
 if __name__ == "__main__":
     unittest.main()

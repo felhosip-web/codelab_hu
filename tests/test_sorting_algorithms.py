@@ -64,18 +64,33 @@ class TestSortingAlgorithms(unittest.TestCase):
         plugin = self.loader.get_plugin("counting_sort")
         self.assertIsNotNone(plugin)
 
-        steps = list(plugin.get_steps([3, 1, 2]))
+        size = 8
+        max_val = 5
+        plugin.set_param("size", size)
+        plugin.set_param("max_val", max_val)
+
+        steps = list(plugin.get_steps([]))
         self.assertGreater(len(steps), 0)
 
         for step in steps:
             self.assertIsInstance(step, VisualizationStep)
 
         final_step = steps[-1]
-        self.assertIn("phase", final_step.extra)
         self.assertEqual(final_step.extra["phase"], "done")
-        self.assertIn("sorted", final_step.extra)
+
         sorted_res = final_step.extra["sorted"]
+        count_buckets = final_step.extra["count"]
+
+        # Assert exact length and value bounds
+        self.assertEqual(len(sorted_res), size)
+        self.assertEqual(len(count_buckets), max_val + 1)
+        self.assertEqual(sum(count_buckets), size)
+
+        # Assert array is fully sorted in non-decreasing order
         self.assertEqual(sorted_res, sorted(sorted_res))
+        for val in sorted_res:
+            self.assertGreaterEqual(val, 0)
+            self.assertLessEqual(val, max_val)
 
 
 if __name__ == "__main__":

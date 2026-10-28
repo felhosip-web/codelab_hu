@@ -12,10 +12,14 @@ class TestMathNumericalAlgorithms(unittest.TestCase):
 
     def test_factorial_contract(self):
         """
-        Tests factorial plugin: 5! = 120, checking final step result.
+        Tests factorial plugin for n=1 (1) and n=5 (120).
         """
         plugin = self.loader.get_plugin("factorial")
         self.assertIsNotNone(plugin)
+
+        plugin.set_param("n", 1)
+        steps1 = list(plugin.get_steps([]))
+        self.assertEqual(steps1[-1].extra["result"], 1)
 
         plugin.set_param("n", 5)
         steps = list(plugin.get_steps([]))
@@ -29,10 +33,14 @@ class TestMathNumericalAlgorithms(unittest.TestCase):
 
     def test_fibonacci_contract(self):
         """
-        Tests fibonacci_iter plugin: F(8) = 21.
+        Tests fibonacci_iter plugin: F(3) = 2, F(8) = 21.
         """
         plugin = self.loader.get_plugin("fibonacci_iter")
         self.assertIsNotNone(plugin)
+
+        plugin.set_param("n", 3)
+        steps3 = list(plugin.get_steps([]))
+        self.assertEqual(steps3[-1].extra["result"], 2)
 
         plugin.set_param("n", 8)
         steps = list(plugin.get_steps([]))
@@ -43,10 +51,15 @@ class TestMathNumericalAlgorithms(unittest.TestCase):
 
     def test_gcd_contract(self):
         """
-        Tests LNKO - Euklideszi plugin: gcd(48, 18) = 6.
+        Tests LNKO - Euklideszi plugin: gcd(48, 18) = 6, gcd(17, 13) = 1.
         """
         plugin = self.loader.get_plugin("gcd")
         self.assertIsNotNone(plugin)
+
+        plugin.set_param("a", 17)
+        plugin.set_param("b", 13)
+        steps1 = list(plugin.get_steps([]))
+        self.assertEqual(steps1[-1].extra["result"], 1)
 
         plugin.set_param("a", 48)
         plugin.set_param("b", 18)
@@ -58,17 +71,18 @@ class TestMathNumericalAlgorithms(unittest.TestCase):
 
     def test_hanoi_contract(self):
         """
-        Tests Hanoi tornyai plugin for n=3 disks -> 2^3 - 1 = 7 moves.
+        Tests Hanoi tornyai plugin for n=3 disks -> 7 moves, n=4 disks -> 15 moves.
         """
         plugin = self.loader.get_plugin("hanoi")
         self.assertIsNotNone(plugin)
 
         plugin.set_param("n", 3)
         steps = list(plugin.get_steps([]))
-        self.assertGreater(len(steps), 0)
+        self.assertEqual(steps[-1].extra["total"], 7)
 
-        final_step = steps[-1]
-        self.assertEqual(final_step.extra["total"], 7)
+        plugin.set_param("n", 4)
+        steps4 = list(plugin.get_steps([]))
+        self.assertEqual(steps4[-1].extra["total"], 15)
 
     def test_sieve_contract(self):
         """
@@ -87,10 +101,15 @@ class TestMathNumericalAlgorithms(unittest.TestCase):
 
     def test_power_contract(self):
         """
-        Tests Hatvány plugin for 2^10 = 1024.
+        Tests Hatvány plugin for 2^10 = 1024, 3^4 = 81.
         """
         plugin = self.loader.get_plugin("power")
         self.assertIsNotNone(plugin)
+
+        plugin.set_param("base", 3)
+        plugin.set_param("exp", 4)
+        steps3 = list(plugin.get_steps([]))
+        self.assertEqual(steps3[-1].extra["result"], 81)
 
         plugin.set_param("base", 2)
         plugin.set_param("exp", 10)

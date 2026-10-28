@@ -10,28 +10,33 @@ class TestStringSearchAlgorithms(unittest.TestCase):
         cls.loader = PluginLoader()
         cls.loader.load_all()
 
-    def test_string_search_plugins(self):
-        """
-        Tests string matching plugins: kmp, rabinkarp, boyermoore.
-        Verifies step generation and pattern match search behavior.
-        """
-        pids = ["kmp", "rabinkarp", "boyermoore"]
+    def test_kmp_search_contract(self):
+        plugin = self.loader.get_plugin("kmp")
+        self.assertIsNotNone(plugin)
 
-        for pid in pids:
-            plugin = self.loader.get_plugin(pid)
-            self.assertIsNotNone(plugin, f"Plugin {pid} not found")
+        steps = list(plugin.get_steps([]))
+        final_step = steps[-1]
+        self.assertIn("found_positions", final_step.extra)
+        self.assertEqual(final_step.extra["found_positions"], [10])
+        self.assertIn("lps", final_step.extra)
 
-            steps = list(plugin.get_steps([]))
-            self.assertGreater(len(steps), 0, f"No steps generated for {pid}")
+    def test_rabinkarp_search_contract(self):
+        plugin = self.loader.get_plugin("rabinkarp")
+        self.assertIsNotNone(plugin)
 
-            for step in steps:
-                self.assertIsInstance(step, VisualizationStep)
+        steps = list(plugin.get_steps([]))
+        final_step = steps[-1]
+        self.assertIn("found_positions", final_step.extra)
+        self.assertEqual(final_step.extra["found_positions"], [10])
 
-            first_step = steps[0]
-            self.assertIsInstance(first_step, VisualizationStep)
+    def test_boyermoore_search_contract(self):
+        plugin = self.loader.get_plugin("boyermoore")
+        self.assertIsNotNone(plugin)
 
-            final_step = steps[-1]
-            self.assertIsInstance(final_step, VisualizationStep)
+        steps = list(plugin.get_steps([]))
+        final_step = steps[-1]
+        self.assertIn("found", final_step.extra)
+        self.assertEqual(final_step.extra["found"], [4, 10])
 
 
 if __name__ == "__main__":

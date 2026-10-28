@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
 import pathlib
-import sys
 import importlib.util
 from core.plugin_system import PluginLoader, AlgorithmPluginBase
 
@@ -13,9 +12,8 @@ class TestPluginDiscovery(unittest.TestCase):
 
     def test_all_plugin_folders_and_classes_loaded_without_errors(self):
         """
-        Dynamically scans the plugins/ directory and asserts that all plugin folders
-        and all algorithm classes inheriting from AlgorithmPluginBase are discovered
-        and loaded without any errors.
+        Dynamically scans the plugins/ directory, discovers all algorithm classes,
+        and asserts that each discovered plugin class is registered with the PluginLoader.
         """
         plugins_dir = pathlib.Path(__file__).parent.parent / "plugins"
         plugin_folders = [
@@ -26,7 +24,7 @@ class TestPluginDiscovery(unittest.TestCase):
         self.assertGreater(len(plugin_folders), 0, "No plugin folders found in plugins/")
 
         # Find all valid AlgorithmPluginBase subclasses in plugin files
-        expected_classes = []
+        discovered_plugins = {}
         for folder in plugin_folders:
             plugin_file = folder / "plugin.py"
             module_name = f"plugins.{folder.name}.plugin"
@@ -44,7 +42,10 @@ class TestPluginDiscovery(unittest.TestCase):
                     and not getattr(attr, "__abstractmethods__", False)
                     and attr.__module__ == module.__name__
                 ):
-                    expected_classes.append((folder.name, attr_name, attr))
+                    inst = attr()
+                    pid = str(getattr(inst, "id", "")).strip()
+                    if pid:
+                        discovered_plugins[pid] = (folder.name, attr_name, attr)
 
         # Check zero loading errors
         load_errors = self.loader.get_load_errors()
@@ -53,12 +54,18 @@ class TestPluginDiscovery(unittest.TestCase):
             f"PluginLoader reported load errors: {load_errors}"
         )
 
-        # Assert total loaded plugins matches expected classes count
-        loaded_plugins = self.loader.plugins
-        self.assertEqual(
-            len(loaded_plugins), len(expected_classes),
-            f"Loaded plugin count ({len(loaded_plugins)}) does not match expected plugin classes count ({len(expected_classes)})"
-        )
+        # Assert that every discovered plugin ID exists in loader with matching class name
+        for pid, (folder_name, cls_name, cls) in discovered_plugins.items():
+            with self.subTest(plugin_id=pid, class_name=cls_name):
+                plugin_inst = self.loader.get_plugin(pid)
+                self.assertIsNotNone(
+                    plugin_inst,
+                    f"Discovered plugin '{pid}' ({cls_name} in plugins/{folder_name}) was not registered in PluginLoader"
+                )
+                self.assertEqual(
+                    plugin_inst.__class__.__name__, cls_name,
+                    f"Registered plugin '{pid}' class name mismatch: expected {cls_name}, got {plugin_inst.__class__.__name__}"
+                )
 
     def test_plugin_metadata_contracts(self):
         """
