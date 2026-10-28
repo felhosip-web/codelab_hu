@@ -12,7 +12,7 @@ class TestDataStructures(unittest.TestCase):
 
     def test_stack_lifo_contract(self):
         """
-        Tests Stack plugin: LIFO behavior and push/pop operations.
+        Tests Stack plugin: LIFO ordering of pushed and popped values.
         """
         plugin = self.loader.get_plugin("stack")
         self.assertIsNotNone(plugin)
@@ -20,18 +20,19 @@ class TestDataStructures(unittest.TestCase):
         steps = list(plugin.get_steps([]))
         self.assertGreater(len(steps), 0)
 
-        push_steps = [s for s in steps if s.extra.get("phase") == "push"]
-        self.assertGreater(len(push_steps), 0)
+        pushed_vals = [s.extra["value"] for s in steps if s.extra.get("phase") == "push"]
+        popped_vals = [s.extra["value"] for s in steps if s.extra.get("phase") == "pop"]
 
-        pop_steps = [s for s in steps if s.extra.get("phase") == "pop"]
-        self.assertGreater(len(pop_steps), 0)
+        self.assertGreater(len(pushed_vals), 0)
+        self.assertGreater(len(popped_vals), 0)
 
-        final_step = steps[-1]
-        self.assertEqual(final_step.extra["phase"], "kesz")
+        # LIFO property: popped values must equal the reverse of the last pushed values
+        expected_popped = list(reversed(pushed_vals[-len(popped_vals):]))
+        self.assertEqual(popped_vals, expected_popped)
 
     def test_queue_fifo_contract(self):
         """
-        Tests Queue plugin: FIFO behavior and enqueue/dequeue operations.
+        Tests Queue plugin: FIFO ordering of enqueued and dequeued values.
         """
         plugin = self.loader.get_plugin("queue")
         self.assertIsNotNone(plugin)
@@ -39,14 +40,15 @@ class TestDataStructures(unittest.TestCase):
         steps = list(plugin.get_steps([]))
         self.assertGreater(len(steps), 0)
 
-        enqueue_steps = [s for s in steps if s.extra.get("phase") == "enqueue"]
-        self.assertGreater(len(enqueue_steps), 0)
+        enqueued_vals = [s.extra["value"] for s in steps if s.extra.get("phase") == "enqueue"]
+        dequeued_vals = [s.extra["value"] for s in steps if s.extra.get("phase") == "dequeue"]
 
-        dequeue_steps = [s for s in steps if s.extra.get("phase") == "dequeue"]
-        self.assertGreater(len(dequeue_steps), 0)
+        self.assertGreater(len(enqueued_vals), 0)
+        self.assertGreater(len(dequeued_vals), 0)
 
-        final_step = steps[-1]
-        self.assertEqual(final_step.extra["phase"], "kesz")
+        # FIFO property: dequeued values match enqueued values in first-in first-out order
+        expected_dequeued = enqueued_vals[:len(dequeued_vals)]
+        self.assertEqual(dequeued_vals, expected_dequeued)
 
     def test_circular_queue_contract(self):
         """
@@ -99,6 +101,16 @@ class TestDataStructures(unittest.TestCase):
         bst = self.loader.get_plugin("bst")
         bst_steps = list(bst.get_steps([]))
         self.assertTrue(bst_steps[-1].extra.get("found"))
+
+        # AVL Tree insertion
+        avl = self.loader.get_plugin("avl")
+        avl_steps = list(avl.get_steps([]))
+        self.assertIn("inserted", avl_steps[-1].extra)
+
+        # B-Tree insertion
+        btree = self.loader.get_plugin("btree")
+        btree_steps = list(btree.get_steps([]))
+        self.assertIn("inserted", btree_steps[-1].extra)
 
         # Traversal result
         trav = self.loader.get_plugin("traversal")

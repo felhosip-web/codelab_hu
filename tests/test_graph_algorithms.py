@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+import random
 from core.plugin_system import PluginLoader
 from core.step import VisualizationStep
 
@@ -22,6 +23,7 @@ class TestGraphAlgorithms(unittest.TestCase):
             plugin = self.loader.get_plugin(pid)
             self.assertIsNotNone(plugin, f"Plugin {pid} not found")
 
+            random.seed(42)
             steps = list(plugin.get_steps([]))
             self.assertGreater(len(steps), 0, f"No steps generated for {pid}")
 
@@ -47,36 +49,36 @@ class TestGraphAlgorithms(unittest.TestCase):
                         u, v = path[i], path[i + 1]
                         neighbors = [nbr for nbr, _ in graph.nodes[u].neighbors]
                         self.assertIn(v, neighbors, f"Edge ({u}, {v}) missing in graph path for {pid}")
-            else:
-                # Target was unreachable in sample graph
-                self.assertTrue("start" in final_step.extra and "target" in final_step.extra)
 
-    def test_dijkstra_shortest_path_distance(self):
+    def test_dijkstra_shortest_path_distance_deterministic(self):
         """
-        Verifies Dijkstra calculates the exact shortest path distance when path exists.
+        Verifies Dijkstra calculates the exact shortest path distance on a deterministic graph.
         """
         dijkstra = self.loader.get_plugin("dijkstra")
-        # Run until we get a graph where target is reachable
-        for _ in range(10):
-            steps = list(dijkstra.get_steps([]))
-            final_step = steps[-1]
-            if final_step.extra.get("found"):
-                target = final_step.extra["target"]
-                distances = final_step.extra["dist"]
-                path = final_step.extra["path"]
-                graph = final_step.extra["graph"]
+        random.seed(42)
+        steps = list(dijkstra.get_steps([]))
+        final_step = steps[-1]
 
-                # Calculate path cost manually from graph edge weights
-                calc_cost = 0
-                for i in range(len(path) - 1):
-                    u, v = path[i], path[i + 1]
-                    for nbr, weight in graph.nodes[u].neighbors:
-                        if nbr == v:
-                            calc_cost += weight
-                            break
+        self.assertTrue(final_step.extra.get("found"), "Dijkstra failed to find path in deterministic graph")
 
-                self.assertEqual(distances[target], calc_cost)
-                break
+        target = final_step.extra["target"]
+        distances = final_step.extra["dist"]
+        path = final_step.extra["path"]
+        graph = final_step.extra["graph"]
+
+        # Calculate path cost manually from graph edge weights, failing if edge is missing
+        calc_cost = 0
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i + 1]
+            found_edge = False
+            for nbr, weight in graph.nodes[u].neighbors:
+                if nbr == v:
+                    calc_cost += weight
+                    found_edge = True
+                    break
+            self.assertTrue(found_edge, f"Path contains invalid edge ({u}, {v}) not in graph")
+
+        self.assertEqual(distances[target], calc_cost)
 
 
 if __name__ == "__main__":

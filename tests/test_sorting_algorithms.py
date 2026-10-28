@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+import random
 from core.plugin_system import PluginLoader
 from core.step import VisualizationStep
 
@@ -59,7 +60,7 @@ class TestSortingAlgorithms(unittest.TestCase):
     def test_counting_sort_contract(self):
         """
         Tests counting_sort algorithm step generation, count buckets,
-        and final sorted array structure in extra and array fields.
+        and exact deterministic sorted array against known expected output.
         """
         plugin = self.loader.get_plugin("counting_sort")
         self.assertIsNotNone(plugin)
@@ -69,6 +70,8 @@ class TestSortingAlgorithms(unittest.TestCase):
         plugin.set_param("size", size)
         plugin.set_param("max_val", max_val)
 
+        # Seed random generator for deterministic internal array generation
+        random.seed(42)
         steps = list(plugin.get_steps([]))
         self.assertGreater(len(steps), 0)
 
@@ -81,16 +84,14 @@ class TestSortingAlgorithms(unittest.TestCase):
         sorted_res = final_step.extra["sorted"]
         count_buckets = final_step.extra["count"]
 
-        # Assert exact length and value bounds
-        self.assertEqual(len(sorted_res), size)
-        self.assertEqual(len(count_buckets), max_val + 1)
-        self.assertEqual(sum(count_buckets), size)
+        # Assert exact expected sorted result against seeded random array [5, 0, 1, 1, 2, 5, 1, 0]
+        expected_sorted = [0, 0, 1, 1, 1, 2, 5, 5]
+        expected_count = [2, 3, 1, 0, 0, 2]
 
-        # Assert array is fully sorted in non-decreasing order
-        self.assertEqual(sorted_res, sorted(sorted_res))
-        for val in sorted_res:
-            self.assertGreaterEqual(val, 0)
-            self.assertLessEqual(val, max_val)
+        self.assertEqual(sorted_res, expected_sorted)
+        self.assertEqual(count_buckets, expected_count)
+        self.assertEqual(len(sorted_res), size)
+        self.assertEqual(sum(count_buckets), size)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+import random
 from core.plugin_system import PluginLoader
 from core.step import VisualizationStep
 
@@ -14,25 +15,28 @@ class TestSearchAlgorithms(unittest.TestCase):
         """
         Tests linear_search plugin for step generation, target searching,
         and step metric/extra invariants across normal, boundary, and duplicate inputs.
+        Note: The plugin interface selects a target from sorted(arr).
         """
         plugin = self.loader.get_plugin("linear_search")
         self.assertIsNotNone(plugin)
 
         arr = [10, 20, 30, 40, 50]
+        random.seed(42)
         steps = list(plugin.get_steps(arr))
         self.assertGreater(len(steps), 0)
 
         first_step = steps[0]
         self.assertIsInstance(first_step, VisualizationStep)
-        self.assertEqual(first_step.array, sorted(arr))
+        sorted_arr = sorted(arr)
+        self.assertEqual(first_step.array, sorted_arr)
 
         target = first_step.extra["target"]
-        self.assertIn(target, sorted(arr))
+        self.assertIn(target, sorted_arr)
 
         final_step = steps[-1]
         self.assertIn("found", final_step.extra)
         found_idx = final_step.extra["found"]
-        self.assertEqual(sorted(arr)[found_idx], target)
+        self.assertEqual(sorted_arr[found_idx], target)
 
         # Empty array (absent target)
         empty_steps = list(plugin.get_steps([]))
@@ -49,6 +53,7 @@ class TestSearchAlgorithms(unittest.TestCase):
         self.assertIsNotNone(plugin)
 
         arr = [5, 12, 18, 24, 31, 45, 50]
+        random.seed(42)
         steps = list(plugin.get_steps(arr))
         self.assertGreater(len(steps), 0)
 
@@ -74,6 +79,7 @@ class TestSearchAlgorithms(unittest.TestCase):
         for pid in ["linear_search", "binary_search"]:
             plugin = self.loader.get_plugin(pid)
             arr = [2, 2, 5, 5, 8]
+            random.seed(42)
             steps = list(plugin.get_steps(arr))
             final_step = steps[-1]
             self.assertIn("found", final_step.extra)

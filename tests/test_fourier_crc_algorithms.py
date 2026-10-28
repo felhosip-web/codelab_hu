@@ -13,7 +13,8 @@ class TestFourierCRCAlgorithms(unittest.TestCase):
 
     def test_dft_and_fft_transform_contracts(self):
         """
-        Tests Fourier transform plugins: dft and fft for spectrum computation.
+        Tests Fourier transform plugins: dft and fft for spectrum computation
+        and magnitude calculation.
         """
         for pid in ["dft", "fft"]:
             plugin = self.loader.get_plugin(pid)
@@ -30,10 +31,14 @@ class TestFourierCRCAlgorithms(unittest.TestCase):
             self.assertIn("spectrum", final_step.extra)
             self.assertIn("magnitude", final_step.extra)
 
-            # Spectrum and magnitude length equal N
             n = final_step.extra["N"]
             self.assertEqual(len(final_step.extra["spectrum"]), n)
             self.assertEqual(len(final_step.extra["magnitude"]), n)
+
+            # Peak frequency bin magnitude test
+            magnitudes = final_step.extra["magnitude"]
+            peak_mag = max(magnitudes)
+            self.assertAlmostEqual(peak_mag, 4.0, delta=1e-3)
 
     def test_crc_and_rs_error_detection_contracts(self):
         """
@@ -42,14 +47,19 @@ class TestFourierCRCAlgorithms(unittest.TestCase):
         # CRC
         crc_plugin = self.loader.get_plugin("crc")
         crc_steps = list(crc_plugin.get_steps([]))
-        self.assertIn("has_error", crc_steps[-1].extra)
+        final_crc = crc_steps[-1]
+        self.assertIn("has_error", final_crc.extra)
+        self.assertTrue(final_crc.extra["has_error"], "CRC failed to detect corrupted bit error")
 
         # Reed-Solomon
         rs_plugin = self.loader.get_plugin("reed_solomon")
         rs_steps = list(rs_plugin.get_steps([]))
-        self.assertIn("success", rs_steps[-1].extra)
-        self.assertTrue(rs_steps[-1].extra["success"])
-        self.assertIn("codeword", rs_steps[-1].extra)
+        final_rs = rs_steps[-1]
+        self.assertIn("success", final_rs.extra)
+        self.assertTrue(final_rs.extra["success"])
+        self.assertIn("codeword", final_rs.extra)
+        decoded_str = ",".join(map(str, final_rs.extra["decoded"]))
+        self.assertEqual(decoded_str, final_rs.extra["data"])
 
 
 if __name__ == "__main__":

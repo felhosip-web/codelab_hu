@@ -13,7 +13,8 @@ class TestPluginDiscovery(unittest.TestCase):
     def test_all_plugin_folders_and_classes_loaded_without_errors(self):
         """
         Dynamically scans the plugins/ directory, discovers all algorithm classes,
-        and asserts that each discovered plugin class is registered with the PluginLoader.
+        asserts no duplicate plugin IDs exist, and verifies set equality between
+        discovered plugin IDs and PluginLoader registered plugin IDs.
         """
         plugins_dir = pathlib.Path(__file__).parent.parent / "plugins"
         plugin_folders = [
@@ -45,6 +46,10 @@ class TestPluginDiscovery(unittest.TestCase):
                     inst = attr()
                     pid = str(getattr(inst, "id", "")).strip()
                     if pid:
+                        self.assertNotIn(
+                            pid, discovered_plugins,
+                            f"Duplicate plugin ID '{pid}' discovered in {folder.name}/{attr_name}"
+                        )
                         discovered_plugins[pid] = (folder.name, attr_name, attr)
 
         # Check zero loading errors
@@ -54,18 +59,19 @@ class TestPluginDiscovery(unittest.TestCase):
             f"PluginLoader reported load errors: {load_errors}"
         )
 
-        # Assert that every discovered plugin ID exists in loader with matching class name
+        # Assert set equality between discovered plugin IDs and loader registered plugin IDs
+        self.assertEqual(
+            set(discovered_plugins.keys()),
+            set(self.loader.plugins.keys()),
+            f"Discovered plugin IDs do not match registered plugin IDs in loader"
+        )
+
+        # Assert class name match for each plugin
         for pid, (folder_name, cls_name, cls) in discovered_plugins.items():
             with self.subTest(plugin_id=pid, class_name=cls_name):
                 plugin_inst = self.loader.get_plugin(pid)
-                self.assertIsNotNone(
-                    plugin_inst,
-                    f"Discovered plugin '{pid}' ({cls_name} in plugins/{folder_name}) was not registered in PluginLoader"
-                )
-                self.assertEqual(
-                    plugin_inst.__class__.__name__, cls_name,
-                    f"Registered plugin '{pid}' class name mismatch: expected {cls_name}, got {plugin_inst.__class__.__name__}"
-                )
+                self.assertIsNotNone(plugin_inst)
+                self.assertEqual(plugin_inst.__class__.__name__, cls_name)
 
     def test_plugin_metadata_contracts(self):
         """

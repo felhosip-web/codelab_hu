@@ -33,10 +33,17 @@ class TestStringSearchAlgorithms(unittest.TestCase):
         plugin = self.loader.get_plugin("boyermoore")
         self.assertIsNotNone(plugin)
 
+        # Present pattern
+        plugin.set_param("pattern", "ABABAA")
         steps = list(plugin.get_steps([]))
         final_step = steps[-1]
         self.assertIn("found", final_step.extra)
         self.assertEqual(final_step.extra["found"], [4, 10])
+
+        # Absent pattern
+        plugin.set_param("pattern", "XYZ")
+        absent_steps = list(plugin.get_steps([]))
+        self.assertEqual(absent_steps[-1].extra["found"], [])
 
 
 if __name__ == "__main__":
