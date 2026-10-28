@@ -15,7 +15,8 @@ class TestSearchAlgorithms(unittest.TestCase):
         """
         Tests linear_search plugin for step generation, target searching,
         and step metric/extra invariants across normal, boundary, and duplicate inputs.
-        Note: The plugin interface selects a target from sorted(arr).
+        Note: The plugin interface selects a target from sorted(arr) when non-empty,
+        or handles empty array as absent target.
         """
         plugin = self.loader.get_plugin("linear_search")
         self.assertIsNotNone(plugin)
@@ -38,11 +39,12 @@ class TestSearchAlgorithms(unittest.TestCase):
         found_idx = final_step.extra["found"]
         self.assertEqual(sorted_arr[found_idx], target)
 
-        # Empty array (absent target)
+        # Empty array (absent target representation)
         empty_steps = list(plugin.get_steps([]))
         self.assertGreater(len(empty_steps), 0)
         self.assertEqual(empty_steps[0].array, [])
         self.assertNotIn("found", empty_steps[-1].extra)
+        self.assertEqual(empty_steps[-1].extra["target"], 0)
 
     def test_binary_search_contract(self):
         """
@@ -66,11 +68,12 @@ class TestSearchAlgorithms(unittest.TestCase):
         found_idx = final_step.extra["found"]
         self.assertEqual(sorted_arr[found_idx], target)
 
-        # Empty array edge case
+        # Empty array edge case (absent target representation)
         empty_steps = list(plugin.get_steps([]))
         self.assertGreater(len(empty_steps), 0)
         self.assertEqual(empty_steps[0].array, [])
         self.assertNotIn("found", empty_steps[-1].extra)
+        self.assertEqual(empty_steps[-1].extra["target"], 0)
 
     def test_search_duplicates(self):
         """

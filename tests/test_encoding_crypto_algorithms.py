@@ -71,7 +71,8 @@ class TestEncodingCryptoAlgorithms(unittest.TestCase):
         steps = list(plugin.get_steps([]))
         final_step = steps[-1]
 
-        self.assertIn("encoded", final_step.extra)
+        self.assertEqual(final_step.extra.get("text"), "HELLO WORLD")
+        self.assertEqual(final_step.extra.get("encoded"), "IKACB BMTBF")
         self.assertTrue(final_step.extra.get("symmetric"))
         self.assertEqual(len(final_step.extra["encoded"]), len(final_step.extra["text"]))
 

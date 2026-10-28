@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+import random
 from core.plugin_system import PluginLoader
 from core.step import VisualizationStep
 
@@ -66,17 +67,34 @@ class TestDataStructures(unittest.TestCase):
 
     def test_deque_contract(self):
         """
-        Tests Deque plugin: double-ended add/remove operations.
+        Tests Deque plugin: double-ended add/remove operations and resulting item states.
         """
         plugin = self.loader.get_plugin("deque")
         self.assertIsNotNone(plugin)
 
+        random.seed(42)
         steps = list(plugin.get_steps([]))
         self.assertGreater(len(steps), 0)
 
-        phases = {s.extra.get("phase") for s in steps}
-        self.assertIn("add_rear", phases)
-        self.assertIn("add_front", phases)
+        # Step 1: add_rear 41 -> [41]
+        self.assertEqual(steps[1].extra["phase"], "add_rear")
+        self.assertEqual(steps[1].extra["value"], 41)
+        self.assertEqual(steps[1].extra["deque"], [41])
+
+        # Step 2: add_front 8 -> [8, 41]
+        self.assertEqual(steps[2].extra["phase"], "add_front")
+        self.assertEqual(steps[2].extra["value"], 8)
+        self.assertEqual(steps[2].extra["deque"], [8, 41])
+
+        # Step 3: remove_front 8 -> [41]
+        self.assertEqual(steps[3].extra["phase"], "remove_front")
+        self.assertEqual(steps[3].extra["value"], 8)
+        self.assertEqual(steps[3].extra["deque"], [41])
+
+        # Step 4: remove_rear 41 -> []
+        self.assertEqual(steps[4].extra["phase"], "remove_rear")
+        self.assertEqual(steps[4].extra["value"], 41)
+        self.assertEqual(steps[4].extra["deque"], [])
 
     def test_linked_list_contract(self):
         """
@@ -102,15 +120,15 @@ class TestDataStructures(unittest.TestCase):
         bst_steps = list(bst.get_steps([]))
         self.assertTrue(bst_steps[-1].extra.get("found"))
 
-        # AVL Tree insertion
+        # AVL Tree inserted values
         avl = self.loader.get_plugin("avl")
         avl_steps = list(avl.get_steps([]))
-        self.assertIn("inserted", avl_steps[-1].extra)
+        self.assertEqual(avl_steps[-1].extra.get("inserted"), [10, 20, 30, 40, 50, 25])
 
-        # B-Tree insertion
+        # B-Tree inserted values
         btree = self.loader.get_plugin("btree")
         btree_steps = list(btree.get_steps([]))
-        self.assertIn("inserted", btree_steps[-1].extra)
+        self.assertEqual(btree_steps[-1].extra.get("inserted"), [10, 20, 5, 6, 12, 30, 7, 17])
 
         # Traversal result
         trav = self.loader.get_plugin("traversal")
