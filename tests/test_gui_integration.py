@@ -497,7 +497,8 @@ class TestApplicationDialogs(unittest.TestCase):
         with patch.object(QMessageBox, 'warning') as mock_warn:
             dialog.on_save()
             mock_warn.assert_called_once()
-            self.assertIn("Érvénytelen megbízható proxy", mock_warn.call_args[0][1])
+            # call_args[0]: (parent, title, text)
+            self.assertIn("Érvénytelen megbízható proxy", mock_warn.call_args[0][2])
 
         # 2. Valid proxy settings save attempt -> saved to disk
         dialog.trusted_proxies_edit.setPlainText("10.0.0.0/8\n192.168.1.1")
