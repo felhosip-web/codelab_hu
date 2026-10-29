@@ -119,41 +119,56 @@ Reverse proxy mögötti publikálás esetén kövesse az alábbi biztonsági ir�
 
 ### 4. Konfigurációs Példa (Nginx Reverse Proxy)
 
-Az alábbiakban egy minimális, biztonságos Nginx példakonfiguráció látható, amely a HTTPS kéréseket a `127.0.0.1:8000` címen futó CodeLab HU backendhez továbbítja:
+Az alábbiakban egy minimális, biztonságos Nginx példakonfiguráció látható, amely a HTTPS kéréseket a `127.0.0.1:8000` címen futó CodeLab HU backendhez továbbítja.
+
+> **Nginx direktíva kontextusok (Directive Contexts):**
+> A `limit_req_zone` direktívát kötelezően a globális **`http`** blokkban kell megadni, míg a virtualhost beállítások a **`server`** blokkba, a kéréskezelési szabályok pedig a **`location`** blokkba tartoznak.
 
 ```nginx
-# Per-kliens rate limiting zóna meghatározása az eredeti IP ($binary_remote_addr) alapján
-limit_req_zone $binary_remote_addr zone=codelab_api_limit:10m rate=10r/s;
+http {
+    # Per-kliens rate limiting zóna meghatározása az Nginx közvetlen peer IP-je ($binary_remote_addr) alapján
+    # Kontextus: http
+    limit_req_zone $binary_remote_addr zone=codelab_api_limit:10m rate=10r/s;
 
-server {
-    listen 443 ssl http2;
-    server_name codelab.example.com;
+    # MEGJEGYZÉS upstream proxy (pl. CDN / Cloudflare / terheléselosztó) használata esetén:
+    # A $binary_remote_addr az Nginx felé csatlakozó közvetlen hálózati peer címét azonosítja.
+    # Ha az Nginx előtt egy CDN vagy upstream proxy helyezkedik el, a valódi kliens IP-cím feloldásához
+    # az Nginx real_ip modulját (set_real_ip_from <upstream_ip>; real_ip_header X-Forwarded-For;)
+    # kell kifejezetten konfigurálni a megbízható upstream proxy-k címeire.
+    # Soha ne bízzon meg vakon a kliens által küldött X-Forwarded-For fejlécekben!
 
-    # SSL/TLS tanúsítványok beállítása
-    ssl_certificate /etc/letsencrypt/live/codelab.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/codelab.example.com/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
+    server {
+        # Kontextus: server
+        listen 443 ssl http2;
+        server_name codelab.example.com;
 
-    # Kérésméret korlátozása (igazodva a backend max_request_size_kb beállításához)
-    client_max_body_size 1m;
+        # SSL/TLS tanúsítványok beállítása
+        ssl_certificate /etc/letsencrypt/live/codelab.example.com/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/codelab.example.com/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
 
-    location /api/ {
-        # Rate limit érvényesítése a proxynál kliensenként
-        limit_req zone=codelab_api_limit burst=20 nodelay;
+        # Kérésméret korlátozása (pontosan igazodva a backend RESTConfig.max_request_size_kb = 100 alapértelmezett értékéhez)
+        client_max_body_size 100k;
 
-        # Továbbítás a loopbacken futó CodeLab HU REST API backend felé
-        proxy_pass http://127.0.0.1:8000;
+        location /api/ {
+            # Kontextus: location
+            # Rate limit érvényesítése a proxynál kliensenként
+            limit_req zone=codelab_api_limit burst=20 nodelay;
 
-        # HTTP fejlécek továbbítása naplózási és audit célból
-        # Figyelem: A backend jelenleg nem módosítja az IP-ellenőrzéseit ezen fejlécek alapján!
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+            # Továbbítás a loopbacken futó CodeLab HU REST API backend felé
+            proxy_pass http://127.0.0.1:8000;
 
-        # Időtúllépési beállítások
-        proxy_connect_timeout 10s;
-        proxy_read_timeout 30s;
+            # HTTP fejlécek továbbítása naplózási és audit célból
+            # Figyelem: A CodeLab HU backend jelenleg NEM módosítja az IP-ellenőrzéseit ezen fejlécek alapján!
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+
+            # Időtúllépési beállítások
+            proxy_connect_timeout 10s;
+            proxy_read_timeout 30s;
+        }
     }
 }
 ```
