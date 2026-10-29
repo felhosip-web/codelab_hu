@@ -176,7 +176,7 @@ Nyílt részek és védelmük:
    - Védve: IP, rate limit, API kulcs, execute jog, sandbox, max méret
    - Jog: execute
    - Meghívja a valódi Engine / plugin get_steps() metódusát
-   - Body példa: {"plugin_id": "bubble", "params": {...}, "array": [5, 3, 8, 1]}
+   - Body példa: {{"plugin_id": "bubble", "params": {{...}}, "array": [5, 3, 8, 1]}}
    - Visszaadja a lépéseket JSON formátumban (max 200 lépés)
    - Ha a plugin nem található: 404
    - Ha execute jog nincs: 403
@@ -207,7 +207,7 @@ curl -H "X-API-Key: YOUR_KEY" http://127.0.0.1:8000/api/v2/plugins
 
 Példa kulcs létrehozás (admin kell):
 curl -X POST -H "X-API-Key: ADMIN_KEY" -H "Content-Type: application/json" 
-  -d '{"name":"myapp","permissions":["read"],"rate_limit":60}' 
+  -d '{{"name":"myapp","permissions":["read"],"rate_limit":60}}'
   http://127.0.0.1:8000/api/v2/keys
 
 Ajánlott beállítás éleshez:
