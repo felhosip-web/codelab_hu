@@ -10,6 +10,7 @@ import math
 import re
 import hashlib
 import secrets
+import ipaddress
 import multiprocessing
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -24,6 +25,60 @@ try:
     import resource
 except ImportError:
     resource = None
+
+def parse_ip_or_network(entry: str):
+    """
+    Parses a string into an ipaddress.IPv4Network or ipaddress.IPv6Network object.
+    Raises ValueError if entry is invalid.
+    """
+    if not isinstance(entry, str):
+        raise ValueError(f"IP/CIDR entry must be a string, got {type(entry).__name__}")
+    entry = entry.strip()
+    if not entry:
+        raise ValueError("Empty IP/CIDR entry")
+    try:
+        return ipaddress.ip_network(entry, strict=False)
+    except ValueError as e:
+        raise ValueError(f"Invalid IP address or CIDR network '{entry}': {e}")
+
+def validate_trusted_proxies(trusted_proxies: List[str]) -> List[str]:
+    """
+    Validates a list of trusted proxy IP/CIDR strings.
+    Returns normalized list of non-empty strings if all are valid.
+    Raises ValueError if any entry is invalid.
+    """
+    if not isinstance(trusted_proxies, (list, tuple)):
+        raise ValueError(f"trusted_proxies must be a list, got {type(trusted_proxies).__name__}")
+    normalized = []
+    for entry in trusted_proxies:
+        if not isinstance(entry, str):
+            raise ValueError(f"Trusted proxy entry must be a string, got {type(entry).__name__}")
+        s = entry.strip()
+        if not s:
+            continue
+        parse_ip_or_network(s)
+        normalized.append(s)
+    return normalized
+
+def is_ip_in_trusted_proxies(ip_str: str, trusted_proxies: List[str]) -> bool:
+    """
+    Checks if an IP address string matches any entry in trusted_proxies (IPv4/IPv6 address or CIDR network).
+    """
+    if not ip_str or not isinstance(ip_str, str):
+        return False
+    try:
+        ip_obj = ipaddress.ip_address(ip_str.strip())
+    except ValueError:
+        return False
+
+    for entry in trusted_proxies:
+        try:
+            net_obj = ipaddress.ip_network(entry.strip(), strict=False)
+            if ip_obj in net_obj:
+                return True
+        except ValueError:
+            continue
+    return False
 
 def hash_api_key(token: str) -> str:
     """Computes SHA-256 digest of an API key token in hex format."""
@@ -69,13 +124,20 @@ class RESTConfig:
     sandbox_timeout_sec: int = 10
     allowed_ips: List[str] = field(default_factory=lambda: ["127.0.0.1"])
     block_unknown_ips: bool = True
-    
+    enable_trusted_proxy: bool = False
+    trusted_proxies: List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.trusted_proxies:
+            self.trusted_proxies = validate_trusted_proxies(self.trusted_proxies)
+
     def to_dict(self):
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(data):
-        return RESTConfig(**{k: v for k, v in data.items() if k in RESTConfig.__dataclass_fields__})
+        cfg_data = {k: v for k, v in data.items() if k in RESTConfig.__dataclass_fields__}
+        return RESTConfig(**cfg_data)
 
 class RateLimiter:
     def __init__(self):
@@ -357,14 +419,58 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
     rate_limiter = RateLimiter()
     plugin_loader = None
     engine = None
-    
+
+    def resolve_client_ip(self) -> tuple[Optional[str], Optional[str]]:
+        """
+        Resolves client IP address based on trusted proxy configuration and X-Forwarded-For header chain.
+        Returns (resolved_ip, error_message).
+        If error_message is not None, resolution failed (fail closed).
+        """
+        peer_ip = self.client_address[0] if (hasattr(self, 'client_address') and self.client_address) else "127.0.0.1"
+
+        if not self.rest_config or not getattr(self.rest_config, "enable_trusted_proxy", False):
+            return peer_ip, None
+
+        trusted_list = getattr(self.rest_config, "trusted_proxies", []) or []
+        if not is_ip_in_trusted_proxies(peer_ip, trusted_list):
+            # Immediate peer is NOT a trusted proxy -> ignore forwarded headers, return peer IP
+            return peer_ip, None
+
+        # Immediate peer IS a trusted proxy -> X-Forwarded-For header is mandatory and must be valid
+        forwarded_hdr = self.headers.get('X-Forwarded-For') or self.headers.get('x-forwarded-for')
+        if not forwarded_hdr or not isinstance(forwarded_hdr, str) or not forwarded_hdr.strip():
+            return None, "Missing or empty X-Forwarded-For header from trusted proxy"
+
+        hops = [h.strip() for h in forwarded_hdr.split(',')]
+        if not hops or any(not h for h in hops):
+            return None, "Malformed X-Forwarded-For header from trusted proxy"
+
+        valid_hops = []
+        for h in hops:
+            try:
+                ip_obj = ipaddress.ip_address(h)
+                valid_hops.append(str(ip_obj))
+            except ValueError:
+                return None, f"Invalid IP address '{h}' in X-Forwarded-For header"
+
+        # Traverse chain right-to-left (closest to trusted peer first), skipping trusted proxy hops
+        for hop_ip in reversed(valid_hops):
+            if is_ip_in_trusted_proxies(hop_ip, trusted_list):
+                continue
+            return hop_ip, None
+
+        # If all hops in chain are trusted proxies, resolved identity is the leftmost entry
+        return valid_hops[0], None
+
     def log_message(self, format, *args):
         # Saját logolás
         if self.rest_config and self.rest_config.log_all_requests:
+            client_ip, ip_err = self.resolve_client_ip()
+            log_ip = client_ip if client_ip else f"{self.client_address[0]} [INVALID_FORWARDED_HEADER]"
             log_path = Path(self.rest_config.log_file)
             log_path.parent.mkdir(exist_ok=True)
             with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(f"{datetime.now().isoformat()} {self.client_address[0]} {format % args}\n")
+                f.write(f"{datetime.now().isoformat()} {log_ip} {format % args}\n")
     
     def _get_cors_origin(self) -> Optional[str]:
         if not (self.rest_config and self.rest_config.enable_cors):
@@ -394,11 +500,15 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
     
     def check_security(self) -> tuple:
         """Returns (allowed, error_message, api_key_obj)"""
+        # Centralized client IP resolution
+        client_ip, ip_err = self.resolve_client_ip()
+        if ip_err:
+            return (False, f"Client IP resolution failure: {ip_err}", None)
+
         # IP ellenőrzés
-        client_ip = self.client_address[0]
         if self.rest_config.block_unknown_ips and client_ip not in self.rest_config.allowed_ips:
             return (False, f"IP {client_ip} blokkolva", None)
-        
+
         # Global rate limit
         if not self.rate_limiter.is_allowed(f"global:{client_ip}", self.rest_config.rate_limit_global_per_min):
             return (False, "Global rate limit túllépve", None)

@@ -454,6 +454,9 @@ class TestSEC01APIKeyStorage(unittest.TestCase):
         self.keys_path = Path("saves/test_sec01_keys.json")
         self.log_path = Path("saves/test_sec01_access.log")
 
+        from core.rest_api import RateLimiter, SecureRESTHandler
+        SecureRESTHandler.rate_limiter = RateLimiter()
+
         self.server = SecureRESTAPIServer(
             config_path=str(self.config_path),
             keys_path=str(self.keys_path)
@@ -1146,6 +1149,252 @@ class TestSEC02CORSValidation(unittest.TestCase):
         status, resp_headers, res = self._make_raw_request("/api/v2/status", headers=headers)
         self.assertEqual(status, 200)
         self.assertNotIn("access-control-allow-credentials", resp_headers)
+
+class TestSEC05TrustedProxySupport(unittest.TestCase):
+    """
+    Automated tests for SEC-05 Trusted Proxy Support:
+    1. Existing direct-client behavior when trusted-proxy support is disabled.
+    2. Forwarded headers supplied by an untrusted peer are ignored.
+    3. A trusted immediate peer with a valid single-hop forwarding chain resolves the correct client.
+    4. A valid multi-hop chain resolves the first untrusted client address from the right.
+    5. A trusted proxy address is not mistaken for the client when the chain identifies an untrusted client.
+    6. IPv4, IPv6, and CIDR matching.
+    7. Invalid configured proxy entries.
+    8. Missing or malformed forwarding headers from a trusted peer fail closed.
+    9. Spoofed leftmost "X-Forwarded-For" entries cannot override the actual chain resolution.
+    10. IP restrictions and API-key IP whitelists use the same resolved client identity.
+    11. Rate limiting uses the intended resolved identity and cannot be trivially bypassed by changing forwarded headers.
+    """
+
+    def setUp(self):
+        self.config_path = Path("saves/test_sec05_config.json")
+        self.keys_path = Path("saves/test_sec05_keys.json")
+        self.log_path = Path("saves/test_sec05_access.log")
+
+        self.server = SecureRESTAPIServer(
+            config_path=str(self.config_path),
+            keys_path=str(self.keys_path)
+        )
+        self.server.config.enabled = True
+        self.server.config.host = "127.0.0.1"
+        self.server.config.port = 8891
+        self.server.config.require_api_key = True
+        self.server.config.log_file = str(self.log_path)
+        self.server.config.log_all_requests = True
+
+        self.read_key = self.server.create_key("read_key", permissions=["read"])
+
+    def tearDown(self):
+        if self.server.is_running():
+            self.server.stop()
+        for p in [self.config_path, self.keys_path, self.log_path]:
+            if p.exists():
+                p.unlink()
+
+    def _make_request(self, path, method="GET", body=None, headers=None):
+        url = f"http://127.0.0.1:8891{path}"
+        req_headers = headers or {}
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+
+        if body is not None and "Content-Type" not in req_headers:
+            req_headers["Content-Type"] = "application/json"
+
+        req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                res_body = resp.read().decode("utf-8")
+                return resp.status, json.loads(res_body)
+        except urllib.error.HTTPError as e:
+            res_body = e.read().decode("utf-8")
+            try:
+                parsed = json.loads(res_body)
+            except Exception:
+                parsed = res_body
+            return e.code, parsed
+
+    def test_disabled_by_default_and_direct_client_behavior(self):
+        """Requirement 1: Trusted proxy disabled by default; peer IP used and X-Forwarded-For ignored."""
+        self.assertFalse(self.server.config.enable_trusted_proxy)
+        self.assertEqual(self.server.config.trusted_proxies, [])
+
+        self.server.start()
+        time.sleep(0.05)
+
+        # X-Forwarded-For supplied by untrusted peer when feature is disabled -> IGNORED
+        headers = {"X-API-Key": self.read_key, "X-Forwarded-For": "203.0.113.195"}
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(res["status"], "ok")
+
+    def test_untrusted_peer_forwarded_headers_ignored(self):
+        """Requirement 2: When feature enabled but immediate TCP peer is not in trusted_proxies, forwarded headers are ignored."""
+        self.server.config.enable_trusted_proxy = True
+        self.server.config.trusted_proxies = ["10.0.0.1"]  # 127.0.0.1 is NOT trusted
+        self.server.start()
+        time.sleep(0.05)
+
+        headers = {"X-API-Key": self.read_key, "X-Forwarded-For": "203.0.113.195"}
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+
+    def test_trusted_peer_single_hop_chain(self):
+        """Requirement 3: Trusted immediate peer with valid single-hop X-Forwarded-For resolves correct client."""
+        self.server.config.enable_trusted_proxy = True
+        self.server.config.trusted_proxies = ["127.0.0.1"]
+        self.server.config.block_unknown_ips = True
+        self.server.config.allowed_ips = ["203.0.113.195"]  # Only client allowed
+
+        self.server.start()
+        time.sleep(0.05)
+
+        # 1. Allowed client IP forwarded -> 200 OK
+        headers = {"X-API-Key": self.read_key, "X-Forwarded-For": "203.0.113.195"}
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+
+        # 2. Blocked client IP forwarded -> 403 Forbidden
+        headers = {"X-API-Key": self.read_key, "X-Forwarded-For": "198.51.100.1"}
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 403)
+        self.assertIn("blokkolva", res["error"])
+
+    def test_multi_hop_chain_right_to_left_resolution_and_spoof_resistance(self):
+        """Requirements 4, 5, 9: Traverses right to left, skips trusted proxies, selects first untrusted client, ignores spoofed leftmost entries."""
+        self.server.config.enable_trusted_proxy = True
+        # 127.0.0.1, 10.0.0.0/8, and 172.16.0.0/12 are trusted proxies
+        self.server.config.trusted_proxies = ["127.0.0.1", "10.0.0.0/8", "172.16.0.0/12"]
+        self.server.config.block_unknown_ips = True
+        self.server.config.allowed_ips = ["203.0.113.50"]
+
+        self.server.start()
+        time.sleep(0.05)
+
+        # Chain: "1.1.1.1, 203.0.113.50, 10.0.0.1"
+        # Rightmost is 10.0.0.1 (trusted -> skip), next right is 203.0.113.50 (untrusted -> target client!)
+        # Leftmost 1.1.1.1 is ignored!
+        headers = {
+            "X-API-Key": self.read_key,
+            "X-Forwarded-For": "1.1.1.1, 203.0.113.50, 10.0.0.1"
+        }
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+
+        # Verify that if 203.0.113.50 is not allowed, it gets blocked despite 1.1.1.1 or 10.0.0.1
+        self.server.config.allowed_ips = ["1.1.1.1"]  # Spoofed IP allowed, but real resolved client is 203.0.113.50
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 403)  # Blocked! Spoof failed!
+
+    def test_ipv4_ipv6_and_cidr_matching(self):
+        """Requirement 6: IPv4, IPv6, and CIDR network parsing and matching."""
+        from core.rest_api import is_ip_in_trusted_proxies, validate_trusted_proxies
+
+        proxies = ["127.0.0.1", "10.0.0.0/8", "2001:db8::/32", "192.168.1.100"]
+        self.assertEqual(validate_trusted_proxies(proxies), proxies)
+
+        # IPv4 exact
+        self.assertTrue(is_ip_in_trusted_proxies("127.0.0.1", proxies))
+        self.assertFalse(is_ip_in_trusted_proxies("127.0.0.2", proxies))
+
+        # IPv4 CIDR
+        self.assertTrue(is_ip_in_trusted_proxies("10.254.1.2", proxies))
+        self.assertFalse(is_ip_in_trusted_proxies("11.0.0.1", proxies))
+
+        # IPv6 CIDR
+        self.assertTrue(is_ip_in_trusted_proxies("2001:db8:ffff::1", proxies))
+        self.assertFalse(is_ip_in_trusted_proxies("2001:db9::1", proxies))
+
+    def test_invalid_configured_proxy_entries_rejected(self):
+        """Requirement 7: Invalid configured proxy entries raise ValueError and are clearly rejected."""
+        from core.rest_api import validate_trusted_proxies, RESTConfig
+
+        invalid_entries = [
+            ["300.300.300.300"],
+            ["10.0.0.0/99"],
+            ["invalid_hostname"],
+            ["2001:xyz::1"],
+        ]
+        for inv in invalid_entries:
+            with self.assertRaises(ValueError):
+                validate_trusted_proxies(inv)
+
+            with self.assertRaises(ValueError):
+                RESTConfig(enable_trusted_proxy=True, trusted_proxies=inv)
+
+    def test_missing_or_malformed_forwarded_headers_fail_closed(self):
+        """Requirement 8: Missing or malformed forwarding headers from trusted peer fail closed with 403."""
+        self.server.config.enable_trusted_proxy = True
+        self.server.config.trusted_proxies = ["127.0.0.1"]
+        self.server.start()
+        time.sleep(0.05)
+
+        # 1. Missing header
+        headers_no_ff = {"X-API-Key": self.read_key}
+        status, res = self._make_request("/api/v2/status", headers=headers_no_ff)
+        self.assertEqual(status, 403)
+        self.assertIn("resolution failure", res["error"].lower())
+
+        # 2. Empty header
+        headers_empty = {"X-API-Key": self.read_key, "X-Forwarded-For": "   "}
+        status, res = self._make_request("/api/v2/status", headers=headers_empty)
+        self.assertEqual(status, 403)
+
+        # 3. Malformed IP
+        headers_malformed = {"X-API-Key": self.read_key, "X-Forwarded-For": "203.0.113.1, invalid_ip"}
+        status, res = self._make_request("/api/v2/status", headers=headers_malformed)
+        self.assertEqual(status, 403)
+
+        # 4. Trailing comma or empty element
+        headers_comma = {"X-API-Key": self.read_key, "X-Forwarded-For": "203.0.113.1, "}
+        status, res = self._make_request("/api/v2/status", headers=headers_comma)
+        self.assertEqual(status, 403)
+
+    def test_ip_restrictions_and_api_key_whitelist_same_identity(self):
+        """Requirement 10: Allowed IP checks and API-key IP whitelists both use the same resolved client identity."""
+        whitelisted_key = self.server.create_key("wl_key", permissions=["read"], ip_whitelist=["203.0.113.99"])
+
+        self.server.config.enable_trusted_proxy = True
+        self.server.config.trusted_proxies = ["127.0.0.1"]
+        self.server.config.block_unknown_ips = True
+        self.server.config.allowed_ips = ["203.0.113.99", "203.0.113.100"]
+
+        self.server.start()
+        time.sleep(0.05)
+
+        # Resolved IP 203.0.113.99 matches both allowed_ips AND key whitelist -> 200 OK
+        headers = {"X-API-Key": whitelisted_key, "X-Forwarded-For": "203.0.113.99"}
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 200)
+
+        # Resolved IP 203.0.113.100 passes allowed_ips but fails key whitelist -> 403
+        headers = {"X-API-Key": whitelisted_key, "X-Forwarded-For": "203.0.113.100"}
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 403)
+        self.assertIn("whitelist", res["error"].lower())
+
+    def test_rate_limiting_uses_resolved_identity(self):
+        """Requirement 11: Rate limiting uses intended resolved identity and cannot be bypassed by changing headers when untrusted or spoofing."""
+        from core.rest_api import RateLimiter, SecureRESTHandler
+        SecureRESTHandler.rate_limiter = RateLimiter()
+
+        limited_key = self.server.create_key("l_key", permissions=["read"], rate_limit=2)
+
+        self.server.config.enable_trusted_proxy = True
+        self.server.config.trusted_proxies = ["127.0.0.1"]
+        self.server.config.block_unknown_ips = True
+        self.server.config.allowed_ips = ["203.0.113.77"]
+
+        self.server.start()
+        time.sleep(0.05)
+
+        headers = {"X-API-Key": limited_key, "X-Forwarded-For": "203.0.113.77"}
+        s1, _ = self._make_request("/api/v2/status", headers=headers)
+        s2, _ = self._make_request("/api/v2/status", headers=headers)
+        s3, res3 = self._make_request("/api/v2/status", headers=headers)
+
+        self.assertEqual(s1, 200)
+        self.assertEqual(s2, 200)
+        self.assertEqual(s3, 403)
+        self.assertIn("rate limit", res3["error"].lower())
 
 if __name__ == "__main__":
     unittest.main()

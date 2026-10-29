@@ -98,6 +98,21 @@ class RESTAPIDialog(QDialog):
         self.block_ips_check = QCheckBox()
         self.block_ips_check.setChecked(self.rest_server.config.block_unknown_ips)
         config_form.addRow("Ismeretlen IP blokkolás:", self.block_ips_check)
+
+        self.enable_trusted_proxy_check = QCheckBox("Megbízható proxy (Trusted Proxy) engedélyezése")
+        self.enable_trusted_proxy_check.setChecked(getattr(self.rest_server.config, "enable_trusted_proxy", False))
+        config_form.addRow("Trusted Proxy támogatás:", self.enable_trusted_proxy_check)
+
+        self.trusted_proxies_edit = QTextEdit()
+        self.trusted_proxies_edit.setPlaceholderText("IP-címek és CIDR hálózatok soronként (pl. 127.0.0.1, 10.0.0.0/8, 2001:db8::/32)")
+        self.trusted_proxies_edit.setMaximumHeight(80)
+        self.trusted_proxies_edit.setPlainText("\n".join(getattr(self.rest_server.config, "trusted_proxies", []) or []))
+        config_form.addRow("Megbízható proxy-k (IP/CIDR):", self.trusted_proxies_edit)
+
+        proxy_warning = QLabel("⚠️ BIZTONSÁGI FIGYELMEZTETÉS: Csak az itt kifejezetten megadott megbízható proxy-k X-Forwarded-For fejlécében bízunk meg. A backend nem lehet közvetlenül elérhető publikus hálózatról! Ennek engedélyezése önmagában nem bízik meg egyetlen proxyban sem.")
+        proxy_warning.setStyleSheet("background: #ffeaa7; color: #d63031; padding: 6px; border-radius: 4px; font-size: 11px; font-weight: bold;")
+        proxy_warning.setWordWrap(True)
+        config_form.addRow(proxy_warning)
         
         config_group.setLayout(config_form)
         settings_layout.addWidget(config_group)
@@ -193,7 +208,9 @@ Nyílt részek és védelmük:
 Biztonsági rétegek:
 - Host: 127.0.0.1 csak helyi, 0.0.0.0 veszélyes
 - IP whitelist: csak engedélyezett IP-k
-- Rate limiting: global + kulcsonként
+- Trusted Proxy támogatás: Opt-in (enable_trusted_proxy=True, trusted_proxies=["127.0.0.1"])
+- X-Forwarded-For lánc feloldás: Jobbról balra bejárás, megbízható proxy-k átlépése, fail-closed
+- Rate limiting: global + kulcsonként feloldott IP alapján
 - API kulcs: kötelező, lejárat, IP whitelist kulcsonként
 - Jogok: read/write/execute/admin külön
 - Sandbox: memória limit, timeout
@@ -262,6 +279,16 @@ Ajánlott beállítás éleshez:
             self.keys_list.addItem(item)
     
     def on_save(self):
+        raw_proxies_text = self.trusted_proxies_edit.toPlainText().strip()
+        raw_proxies = [line.strip() for line in raw_proxies_text.split('\n') if line.strip()]
+
+        try:
+            from core.rest_api import validate_trusted_proxies
+            validated_proxies = validate_trusted_proxies(raw_proxies)
+        except ValueError as e:
+            QMessageBox.warning(self, "Hibás konfiguráció", f"Érvénytelen megbízható proxy IP/CIDR cím:\n{e}")
+            return
+
         self.rest_server.config.enabled = self.enabled_check.isChecked()
         self.rest_server.config.host = self.host_edit.text() or "127.0.0.1"
         self.rest_server.config.port = self.port_spin.value()
@@ -275,7 +302,9 @@ Ajánlott beállítás éleshez:
         self.rest_server.config.enable_admin_endpoints = self.enable_admin_check.isChecked()
         self.rest_server.config.enable_sandbox = self.enable_sandbox_check.isChecked()
         self.rest_server.config.block_unknown_ips = self.block_ips_check.isChecked()
-        
+        self.rest_server.config.enable_trusted_proxy = self.enable_trusted_proxy_check.isChecked()
+        self.rest_server.config.trusted_proxies = validated_proxies
+
         self.rest_server.save_config()
         QMessageBox.information(self, "Mentve", f"REST config mentve saves/rest_config.json\nÚjraindítás szükséges ha futott!")
     
