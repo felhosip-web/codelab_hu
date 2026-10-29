@@ -225,13 +225,24 @@ class TestMainWindowInteractions(unittest.TestCase):
 
         mock_warning.assert_called_once()
         self.assertEqual(self.window.current_array, prev_array)
+        self.assertTrue(len(self.window.input_status_label.text()) > 0)
 
     def test_stepping_and_playback_controls(self):
-        """Test step forward, step back, reset, new array, and slider controls."""
+        """Test step forward, step back, reset, new array, playback toggle, and slider controls."""
         self.assertTrue(select_plugin_by_id(self.window, "bubble_sort"))
         self.app.processEvents()
 
         self.assertEqual(self.window.current_step_idx, 0)
+
+        # Playback toggle
+        self.assertFalse(self.window.is_playing)
+        self.window.btn_play.click()
+        self.app.processEvents()
+        self.assertTrue(self.window.is_playing)
+
+        self.window.btn_play.click()
+        self.app.processEvents()
+        self.assertFalse(self.window.is_playing)
 
         # Step forward
         self.window.btn_step.click()
