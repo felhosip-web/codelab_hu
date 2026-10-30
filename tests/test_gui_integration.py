@@ -12,17 +12,24 @@ from unittest.mock import patch, MagicMock
 # Ensure headless Qt execution environment
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QApplication,
-    QTreeWidget,
-    QComboBox,
-    QPushButton,
-    QLineEdit,
-    QSlider,
-    QMessageBox,
-    QDialog,
-)
+try:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import (
+        QApplication,
+        QTreeWidget,
+        QComboBox,
+        QPushButton,
+        QLineEdit,
+        QSlider,
+        QMessageBox,
+        QDialog,
+    )
+    HAS_PYSIDE6 = True
+except ImportError:
+    HAS_PYSIDE6 = False
+
+if not HAS_PYSIDE6:
+    raise unittest.SkipTest("PySide6 is not installed in this environment")
 
 from ui.main_window import MainWindow
 from ui.widgets import (
@@ -470,19 +477,46 @@ class TestApplicationDialogs(unittest.TestCase):
         dialog.deleteLater()
 
     def test_rest_api_dialog(self):
-        """Test RESTAPIDialog tab interface and controls."""
+        """Test RESTAPIDialog tab interface, controls, and trusted proxy settings validation & persistence."""
+        from pathlib import Path
         loader = PluginLoader()
         engine = Engine()
-        server = SecureRESTAPIServer(plugin_loader=loader, engine=engine)
+        server = SecureRESTAPIServer(config_path="saves/test_gui_rest_config.json", plugin_loader=loader, engine=engine)
         dialog = RESTAPIDialog(server, plugin_loader=loader, engine=engine)
         dialog.show()
         self.app.processEvents()
 
         self.assertIsNotNone(dialog.enabled_check)
         self.assertIsNotNone(dialog.keys_list)
+        self.assertIsNotNone(dialog.enable_trusted_proxy_check)
+        self.assertIsNotNone(dialog.trusted_proxies_edit)
+
+        # 1. Invalid proxy settings save attempt -> warning dialog, config not saved
+        dialog.enable_trusted_proxy_check.setChecked(True)
+        dialog.trusted_proxies_edit.setPlainText("invalid_ip_300.300.300.300")
+        with patch.object(QMessageBox, 'warning') as mock_warn:
+            dialog.on_save()
+            mock_warn.assert_called_once()
+            # call_args[0]: (parent, title, text)
+            self.assertIn("Érvénytelen megbízható proxy", mock_warn.call_args[0][2])
+
+        # 2. Valid proxy settings save attempt -> saved to disk
+        dialog.trusted_proxies_edit.setPlainText("10.0.0.0/8\n192.168.1.1")
+        with patch.object(QMessageBox, 'information'):
+            dialog.on_save()
+
+        # Reload server config from disk file and verify persistence
+        reloaded_server = SecureRESTAPIServer(config_path="saves/test_gui_rest_config.json")
+        self.assertTrue(reloaded_server.config.enable_trusted_proxy)
+        self.assertEqual(reloaded_server.config.trusted_proxies, ["10.0.0.0/8", "192.168.1.1"])
 
         dialog.close()
         dialog.deleteLater()
+
+        # Cleanup test config file
+        p = Path("saves/test_gui_rest_config.json")
+        if p.exists():
+            p.unlink()
 
     def test_settings_dialog(self):
         """Test SettingsDialog keybinding list rendering."""

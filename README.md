@@ -95,12 +95,21 @@ A `core/rest_api.py` komponensben a `SecureRESTHandler` az IP-alapú hozzáfér�
 
 ---
 
-### 2. Továbbított fejlécek (Forwarded Headers) és megbízhatósági határok
+### 2. Megbízható Proxy Támogatás (Trusted Proxy Support) és X-Forwarded-For Lánc Feloldás
 
-- **Fejlécek figyelmen kívül hagyása**: A jelenlegi `core/rest_api.py` megvalósítás **NEM** dolgozza fel és **NEM** használja az `X-Forwarded-For`, `X-Real-IP` vagy hasonló HTTP fejléceket a kliens azonosítására.
-- **Konfiguráció tisztázása**: A proxy oldalon az `X-Forwarded-For` vagy `X-Real-IP` fejlécek beállítása önmagában **nem eredményezi** azt, hogy a backend alkalmazás érvényesítse a szabályokat az eredeti kliens IP-címére.
-- **Megbízhatósági határ (Trust Boundary)**: A kliens által küldött HTTP fejlécek önkényes elfogadása sérülékenységhez (IP-spoofing) vezetne. Kódszintű ellenőrzött proxy architektúra (Trusted Proxy ellenőrzés) nélkül a fejlécek nem használhatók biztonsági döntésekhez.
-- **Kerülendő megoldások**: **Soha ne adjon hozzá** publikus vagy tetszőleges kliens IP-címeket a backend `allowed_ips` listájához a proxy működés megkerülése érdekében.
+A `core/rest_api.py` modul beépített, opt-in **Megbízható Proxy (Trusted Proxy)** támogatással rendelkezik (`RESTConfig.enable_trusted_proxy` és `RESTConfig.trusted_proxies`).
+
+- **Alapértelmezett működés (Kikapcsolva)**: A megbízható proxy támogatás **alapértelmezetten tiltva van** (`enable_trusted_proxy = False`). Ekkor a backend kizárólag a közvetlen hálózati socket peer IP-címét (`self.client_address[0]`) használja, és minden `X-Forwarded-For` vagy egyéb továbbított fejlécet figyelmen kívül hagy.
+- **Közvetlen peer ellenőrzése**: Továbbított fejlécek feldolgozására **kizárólag akkor kerül sor**, ha a közvetlen TCP csatlakozó peer címe szerepel a `trusted_proxies` listában (IPv4/IPv6 egyedi IP vagy CIDR hálózat, pl. `127.0.0.1`, `10.0.0.0/8`).
+- **Kliens IP feloldási algoritmus (Right-to-Left Traversal)**:
+  1. Ha a közvetlen TCP peer nem megbízható proxy, a feloldott IP maga a peer IP.
+  2. Ha a közvetlen peer megbízható proxy, a backend elemzi az `X-Forwarded-For` fejlécet.
+  3. A feloldó a láncot **jobbról balra** (a megbízható proxy-hoz legközelebbi hop-tól visszafelé) járja be, és átlépi a `trusted_proxies` listában szereplő megbízható proxy címeket.
+  4. Az első nem megbízható (untrusted) IP-cím lesz a feloldott kliens IP-cím.
+  5. A bal oldali hamisított/spoofolt IP-címek nem tudják felülbírálni a feloldott kliensazonosítót.
+- **Fail-Closed Védelem**: Ha egy megbízható proxy hiányzó, üres vagy érvénytelen/hibás formátumú `X-Forwarded-For` fejlécet küld, a kérés azonnal elutasításra kerül (HTTP 403 Client IP resolution failure).
+- **Egyéb fejlécek mellőzése**: Az `X-Real-IP` fejlécet a rendszer nem használja az ellentmondásos és kétértelmű prioritások elkerülése érdekében.
+- **Egységes érvényesítés**: A feloldott kliens IP-cím egységesen kerül felhasználásra az `allowed_ips` IP-korlátozásoknál, az API-kulcs `ip_whitelist` ellenőrzéseknél, a hozzáférési naplózásnál (`api_access.log`) és az IP-alapú kéréskorlátozásnál (`RateLimiter`).
 
 ---
 
@@ -126,50 +135,47 @@ Az alábbiakban egy minimális, biztonságos Nginx példakonfiguráció láthat�
 
 ```nginx
 http {
-    # Per-kliens rate limiting zóna meghatározása az Nginx közvetlen peer IP-je ($binary_remote_addr) alapján
-    # Kontextus: http
+    # Per-kliens rate limiting zóna az Nginx által azonosított kliens IP alapján
     limit_req_zone $binary_remote_addr zone=codelab_api_limit:10m rate=10r/s;
 
-    # MEGJEGYZÉS upstream proxy (pl. CDN / Cloudflare / terheléselosztó) használata esetén:
-    # A $binary_remote_addr az Nginx felé csatlakozó közvetlen hálózati peer címét azonosítja.
-    # Ha az Nginx előtt egy CDN vagy upstream proxy helyezkedik el, a valódi kliens IP-cím feloldásához
-    # az Nginx real_ip modulját (set_real_ip_from <upstream_ip>; real_ip_header X-Forwarded-For;)
-    # kell kifejezetten konfigurálni a megbízható upstream proxy-k címeire.
-    # Soha ne bízzon meg vakon a kliens által küldött X-Forwarded-For fejlécekben!
-
     server {
-        # Kontextus: server
         listen 443 ssl http2;
         server_name codelab.example.com;
 
-        # SSL/TLS tanúsítványok beállítása
         ssl_certificate /etc/letsencrypt/live/codelab.example.com/fullchain.pem;
         ssl_certificate_key /etc/letsencrypt/live/codelab.example.com/privkey.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
 
-        # Kérésméret korlátozása (pontosan igazodva a backend RESTConfig.max_request_size_kb = 100 alapértelmezett értékéhez)
         client_max_body_size 100k;
 
         location /api/ {
-            # Kontextus: location
-            # Rate limit érvényesítése a proxynál kliensenként
             limit_req zone=codelab_api_limit burst=20 nodelay;
 
-            # Továbbítás a loopbacken futó CodeLab HU REST API backend felé
+            # Továbbítás a hurokfelületen futó CodeLab HU REST API felé
             proxy_pass http://127.0.0.1:8000;
 
-            # HTTP fejlécek továbbítása naplózási és audit célból
-            # Figyelem: A CodeLab HU backend jelenleg NEM módosítja az IP-ellenőrzéseit ezen fejlécek alapján!
             proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
 
-            # Időtúllépési beállítások
             proxy_connect_timeout 10s;
             proxy_read_timeout 30s;
         }
     }
+}
+```
+
+#### Backend RESTConfig beállítás megbízható proxy esetén (`saves/rest_config.json`):
+```json
+{
+  "enabled": true,
+  "host": "127.0.0.1",
+  "port": 8000,
+  "require_api_key": true,
+  "enable_trusted_proxy": true,
+  "trusted_proxies": [
+    "127.0.0.1"
+  ]
 }
 ```
 
@@ -186,10 +192,11 @@ http {
 
 ---
 
-### 5. Korlátozások és Jövőbeli Fejlesztések (Limitations & Future Work)
+### 5. Biztonsági Figyelmeztetések és Határok (Security Boundaries)
 
-- **Jelenlegi korlátozás**: A `core/rest_api.py` jelenlegi megvalósítása **nem tartalmaz** megbízható proxy-tudatos (trusted-proxy) kliens IP-kiemelést.
-- **Jövőbeli fejlesztés**: Az eredeti kliens IP-címek backend oldali biztonságos azonosítása és ellenőrzése (pl. konfigurálható `trusted_proxies` lista és `X-Forwarded-For` érvényesítés) egy különálló jövőbeli kódfejlesztési feladat keretében valósulhat meg. A jelenlegi kódváltozat nem módosítja a futásidejű viselkedést.
+- **Szándékos felállás (Opt-in requirement)**: A Megbízható Proxy funkció kikapcsolt állapotban marad mindaddig, amíg a `enable_trusted_proxy` értékét kifejezetten `true`-ra nem állítják, és a `trusted_proxies` listában meg nem adják a proxy-k címeit.
+- **Közvetlen elérés tilalma**: A backend alkalmazás közvetlenül nem lehet elérhető publikus hálózatról proxy mögötti felállásban.
+- **HTTPS/TLS**: A peremproxy (Edge Proxy) marad felelős a TLS/HTTPS titkosításért és a hálózati szintű hozzáférés-korlátozásokért.
 
 ---
 
