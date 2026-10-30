@@ -1348,6 +1348,58 @@ class TestSEC05TrustedProxySupport(unittest.TestCase):
         status, res = self._make_request("/api/v2/status", headers=headers_comma)
         self.assertEqual(status, 403)
 
+    def test_all_trusted_proxy_chain_fails_closed(self):
+        """Security Fix 1: When all hops in X-Forwarded-For chain are trusted proxies, resolution fails closed (403)."""
+        self.server.config.enable_trusted_proxy = True
+        self.server.config.trusted_proxies = ["127.0.0.1", "10.0.0.0/8"]
+        self.server.start()
+        time.sleep(0.05)
+
+        # Chain containing ONLY trusted proxies (no untrusted client IP identified)
+        headers = {"X-API-Key": self.read_key, "X-Forwarded-For": "10.0.0.1, 10.0.0.2"}
+        status, res = self._make_request("/api/v2/status", headers=headers)
+        self.assertEqual(status, 403)
+        self.assertIn("resolution failure", res["error"].lower())
+        self.assertIn("trusted proxies", res["error"].lower())
+
+    def test_missing_or_invalid_peer_address_fails_closed(self):
+        """Security Fix 2: Missing or invalid direct peer socket address fails closed without inventing 127.0.0.1."""
+        from unittest.mock import MagicMock
+        from core.rest_api import SecureRESTHandler, RESTConfig
+
+        handler = SecureRESTHandler.__new__(SecureRESTHandler)
+        handler.rest_config = RESTConfig(enable_trusted_proxy=True, trusted_proxies=["127.0.0.1"])
+
+        # 1. Missing client_address
+        handler.client_address = None
+        resolved_ip, err = handler.resolve_client_ip()
+        self.assertIsNone(resolved_ip)
+        self.assertIn("peer address unavailable", err.lower())
+
+        # 2. Invalid peer IP string
+        handler.client_address = ("not_an_ip_addr", 12345)
+        resolved_ip, err = handler.resolve_client_ip()
+        self.assertIsNone(resolved_ip)
+        self.assertIn("invalid direct socket peer ip address", err.lower())
+
+    def test_duplicate_forwarded_headers_rejected(self):
+        """Security Fix 3: Ambiguous duplicate X-Forwarded-For header fields fail closed with resolution error (403)."""
+        from unittest.mock import MagicMock
+        from core.rest_api import SecureRESTHandler, RESTConfig
+
+        handler = SecureRESTHandler.__new__(SecureRESTHandler)
+        handler.rest_config = RESTConfig(enable_trusted_proxy=True, trusted_proxies=["127.0.0.1"])
+        handler.client_address = ("127.0.0.1", 54321)
+
+        mock_headers = MagicMock()
+        mock_headers.get_all.return_value = ["203.0.113.1", "203.0.113.2"]
+        mock_headers.get.return_value = "203.0.113.1"
+        handler.headers = mock_headers
+
+        resolved_ip, err = handler.resolve_client_ip()
+        self.assertIsNone(resolved_ip)
+        self.assertIn("ambiguous duplicate x-forwarded-for headers", err.lower())
+
     def test_ip_restrictions_and_api_key_whitelist_same_identity(self):
         """Requirement 10: Allowed IP checks and API-key IP whitelists both use the same resolved client identity."""
         whitelisted_key = self.server.create_key("wl_key", permissions=["read"], ip_whitelist=["203.0.113.99"])

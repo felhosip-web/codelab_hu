@@ -426,7 +426,15 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
         Returns (resolved_ip, error_message).
         If error_message is not None, resolution failed (fail closed).
         """
-        peer_ip = self.client_address[0] if (hasattr(self, 'client_address') and self.client_address) else "127.0.0.1"
+        # Validate direct socket peer address (do NOT invent fallback identity)
+        if not hasattr(self, 'client_address') or not self.client_address or not isinstance(self.client_address, (list, tuple)) or not self.client_address[0]:
+            return None, "Direct socket peer address unavailable"
+
+        peer_ip = str(self.client_address[0]).strip()
+        try:
+            ipaddress.ip_address(peer_ip)
+        except ValueError:
+            return None, f"Invalid direct socket peer IP address '{peer_ip}'"
 
         if not self.rest_config or not getattr(self.rest_config, "enable_trusted_proxy", False):
             return peer_ip, None
@@ -436,7 +444,15 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             # Immediate peer is NOT a trusted proxy -> ignore forwarded headers, return peer IP
             return peer_ip, None
 
-        # Immediate peer IS a trusted proxy -> X-Forwarded-For header is mandatory and must be valid
+        # Immediate peer IS a trusted proxy -> X-Forwarded-For header is mandatory and must be unambiguous
+        if not hasattr(self, 'headers') or self.headers is None:
+            return None, "Missing HTTP headers"
+
+        # Check for ambiguous duplicate X-Forwarded-For headers
+        ff_headers = self.headers.get_all('X-Forwarded-For') or self.headers.get_all('x-forwarded-for') or []
+        if len(ff_headers) > 1:
+            return None, "Ambiguous duplicate X-Forwarded-For headers received from trusted proxy"
+
         forwarded_hdr = self.headers.get('X-Forwarded-For') or self.headers.get('x-forwarded-for')
         if not forwarded_hdr or not isinstance(forwarded_hdr, str) or not forwarded_hdr.strip():
             return None, "Missing or empty X-Forwarded-For header from trusted proxy"
@@ -459,14 +475,15 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 continue
             return hop_ip, None
 
-        # If all hops in chain are trusted proxies, resolved identity is the leftmost entry
-        return valid_hops[0], None
+        # Fail closed if all hops in chain match trusted proxies (no untrusted client address identified)
+        return None, "All hops in X-Forwarded-For chain are trusted proxies (no untrusted client address identified)"
 
     def log_message(self, format, *args):
         # Saját logolás
         if self.rest_config and self.rest_config.log_all_requests:
             client_ip, ip_err = self.resolve_client_ip()
-            log_ip = client_ip if client_ip else f"{self.client_address[0]} [INVALID_FORWARDED_HEADER]"
+            raw_peer = self.client_address[0] if (hasattr(self, 'client_address') and self.client_address and self.client_address[0]) else "UNKNOWN_PEER"
+            log_ip = client_ip if client_ip else f"{raw_peer} [RESOLUTION_FAILED: {ip_err}]"
             log_path = Path(self.rest_config.log_file)
             log_path.parent.mkdir(exist_ok=True)
             with open(log_path, 'a', encoding='utf-8') as f:
