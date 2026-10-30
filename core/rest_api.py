@@ -128,8 +128,7 @@ class RESTConfig:
     trusted_proxies: List[str] = field(default_factory=list)
 
     def __post_init__(self):
-        if self.trusted_proxies:
-            self.trusted_proxies = validate_trusted_proxies(self.trusted_proxies)
+        self.trusted_proxies = validate_trusted_proxies(self.trusted_proxies)
 
     def to_dict(self):
         return asdict(self)

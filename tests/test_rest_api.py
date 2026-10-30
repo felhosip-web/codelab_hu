@@ -1320,6 +1320,22 @@ class TestSEC05TrustedProxySupport(unittest.TestCase):
             with self.assertRaises(ValueError):
                 RESTConfig(enable_trusted_proxy=True, trusted_proxies=inv)
 
+    def test_unconditional_trusted_proxies_type_validation(self):
+        """PR #17 Final Hardening 2: RESTConfig.__post_init__() unconditionally validates trusted_proxies types."""
+        from core.rest_api import RESTConfig
+
+        invalid_types = [None, "127.0.0.1", 123, {"ip": "127.0.0.1"}]
+        for inv in invalid_types:
+            with self.assertRaises(ValueError):
+                RESTConfig(trusted_proxies=inv)
+
+        # Valid default empty list and valid IP/CIDR tuples/lists initialize successfully
+        cfg_empty = RESTConfig(trusted_proxies=[])
+        self.assertEqual(cfg_empty.trusted_proxies, [])
+
+        cfg_valid = RESTConfig(trusted_proxies=["127.0.0.1", "10.0.0.0/8", "2001:db8::/32"])
+        self.assertEqual(cfg_valid.trusted_proxies, ["127.0.0.1", "10.0.0.0/8", "2001:db8::/32"])
+
     def test_missing_or_malformed_forwarded_headers_fail_closed(self):
         """Requirement 8: Missing or malformed forwarding headers from trusted peer fail closed with 403."""
         self.server.config.enable_trusted_proxy = True
@@ -1447,6 +1463,44 @@ class TestSEC05TrustedProxySupport(unittest.TestCase):
         self.assertEqual(s2, 200)
         self.assertEqual(s3, 403)
         self.assertIn("rate limit", res3["error"].lower())
+
+    def test_global_ip_rate_limit_uses_resolved_client_ip(self):
+        """PR #17 Final Hardening 1: Genuine global IP rate-limit test. Requests from same resolved client IP share global bucket even across different API keys."""
+        from core.rest_api import RateLimiter, SecureRESTHandler
+        SecureRESTHandler.rate_limiter = RateLimiter()
+
+        # Create two separate API keys with high per-key limits (100/min each)
+        key1 = self.server.create_key("k1", permissions=["read"], rate_limit=100)
+        key2 = self.server.create_key("k2", permissions=["read"], rate_limit=100)
+
+        self.server.config.enable_trusted_proxy = True
+        self.server.config.trusted_proxies = ["127.0.0.1"]
+        self.server.config.block_unknown_ips = False
+        # Set GLOBAL rate limit to 2 requests/min
+        self.server.config.rate_limit_global_per_min = 2
+
+        self.server.start()
+        time.sleep(0.05)
+
+        client_a = "203.0.113.88"
+        client_b = "203.0.113.89"
+
+        # 1. Request 1 from Client A using Key 1 -> 200 OK (Global bucket global:203.0.113.88 count=1)
+        s1, _ = self._make_request("/api/v2/status", headers={"X-API-Key": key1, "X-Forwarded-For": client_a})
+        self.assertEqual(s1, 200)
+
+        # 2. Request 2 from Client A using DIFFERENT Key 2 -> 200 OK (Global bucket global:203.0.113.88 count=2)
+        s2, _ = self._make_request("/api/v2/status", headers={"X-API-Key": key2, "X-Forwarded-For": client_a})
+        self.assertEqual(s2, 200)
+
+        # 3. Request 3 from Client A using Key 1 -> 403 Forbidden (Global rate limit exceeded for Client A)
+        s3, res3 = self._make_request("/api/v2/status", headers={"X-API-Key": key1, "X-Forwarded-For": client_a})
+        self.assertEqual(s3, 403)
+        self.assertIn("global rate limit", res3["error"].lower())
+
+        # 4. Request 1 from DIFFERENT Client B using Key 1 -> 200 OK (Client B uses separate bucket global:203.0.113.89)
+        s_b, _ = self._make_request("/api/v2/status", headers={"X-API-Key": key1, "X-Forwarded-For": client_b})
+        self.assertEqual(s_b, 200)
 
 if __name__ == "__main__":
     unittest.main()
