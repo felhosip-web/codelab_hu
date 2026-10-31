@@ -26,9 +26,32 @@ try:
 except ImportError:
     resource = None
 
-def parse_ip_or_network(entry: str):
+def normalize_ip_address(ip_val: Any) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """
+    Normalizes an IP address (str, IPv4Address, or IPv6Address).
+    If the IP is an IPv4-mapped IPv6 address (e.g. ::ffff:192.0.2.1), it unmaps it
+    to its underlying IPv4Address for consistent IPv4 CIDR and address matching.
+    Raises ValueError if invalid.
+    """
+    if isinstance(ip_val, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+        ip_obj = ip_val
+    elif isinstance(ip_val, str):
+        s = ip_val.strip()
+        if not s:
+            raise ValueError("Empty IP address string")
+        ip_obj = ipaddress.ip_address(s)
+    else:
+        raise ValueError(f"IP address must be a string or IPAddress object, got {type(ip_val).__name__}")
+
+    if ip_obj.version == 6 and ip_obj.ipv4_mapped:
+        return ip_obj.ipv4_mapped
+    return ip_obj
+
+def parse_ip_or_network(entry: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
     """
     Parses a string into an ipaddress.IPv4Network or ipaddress.IPv6Network object.
+    Normalizes IPv4-mapped IPv6 network specifications (e.g. ::ffff:192.0.2.0/120)
+    to standard IPv4Network objects.
     Raises ValueError if entry is invalid.
     """
     if not isinstance(entry, str):
@@ -37,22 +60,27 @@ def parse_ip_or_network(entry: str):
     if not entry:
         raise ValueError("Empty IP/CIDR entry")
     try:
-        return ipaddress.ip_network(entry, strict=False)
+        net = ipaddress.ip_network(entry, strict=False)
+        if net.version == 6 and net.network_address.ipv4_mapped:
+            if net.prefixlen >= 96:
+                v4_prefix = net.prefixlen - 96
+                return ipaddress.IPv4Network((net.network_address.ipv4_mapped, v4_prefix), strict=False)
+        return net
     except ValueError as e:
         raise ValueError(f"Invalid IP address or CIDR network '{entry}': {e}")
 
-def validate_trusted_proxies(trusted_proxies: List[str]) -> List[str]:
+def validate_ip_network_list(entries: List[str], param_name: str = "IP list") -> List[str]:
     """
-    Validates a list of trusted proxy IP/CIDR strings.
+    Validates a list of IP/CIDR strings.
     Returns normalized list of non-empty strings if all are valid.
     Raises ValueError if any entry is invalid.
     """
-    if not isinstance(trusted_proxies, (list, tuple)):
-        raise ValueError(f"trusted_proxies must be a list, got {type(trusted_proxies).__name__}")
+    if not isinstance(entries, (list, tuple)):
+        raise ValueError(f"{param_name} must be a list, got {type(entries).__name__}")
     normalized = []
-    for entry in trusted_proxies:
+    for idx, entry in enumerate(entries):
         if not isinstance(entry, str):
-            raise ValueError(f"Trusted proxy entry must be a string, got {type(entry).__name__}")
+            raise ValueError(f"{param_name} entry at index {idx} must be a string, got {type(entry).__name__}")
         s = entry.strip()
         if not s:
             continue
@@ -60,25 +88,50 @@ def validate_trusted_proxies(trusted_proxies: List[str]) -> List[str]:
         normalized.append(s)
     return normalized
 
-def is_ip_in_trusted_proxies(ip_str: str, trusted_proxies: List[str]) -> bool:
+def validate_trusted_proxies(trusted_proxies: List[str]) -> List[str]:
     """
-    Checks if an IP address string matches any entry in trusted_proxies (IPv4/IPv6 address or CIDR network).
+    Validates a list of trusted proxy IP/CIDR strings.
+    Returns normalized list of non-empty strings if all are valid.
+    Raises ValueError if any entry is invalid.
+    """
+    return validate_ip_network_list(trusted_proxies, param_name="trusted_proxies")
+
+def is_ip_in_network_list(ip_str: str, network_list: List[str]) -> bool:
+    """
+    Reusable CIDR-aware helper: checks if an IP address matches any entry in network_list.
+    Supports IPv4, IPv6, CIDR subnets (strict=False), and normalizes IPv4-mapped IPv6 addresses.
+    Rejects malformed IPs and network entries safely without crashing or permitting access.
     """
     if not ip_str or not isinstance(ip_str, str):
         return False
     try:
-        ip_obj = ipaddress.ip_address(ip_str.strip())
+        target_ip = normalize_ip_address(ip_str)
     except ValueError:
         return False
 
-    for entry in trusted_proxies:
+    if not network_list or not isinstance(network_list, (list, tuple)):
+        return False
+
+    for entry in network_list:
+        if not isinstance(entry, str):
+            continue
+        s = entry.strip()
+        if not s:
+            continue
         try:
-            net_obj = ipaddress.ip_network(entry.strip(), strict=False)
-            if ip_obj in net_obj:
+            net_obj = parse_ip_or_network(s)
+            if target_ip in net_obj:
                 return True
         except ValueError:
             continue
     return False
+
+def is_ip_in_trusted_proxies(ip_str: str, trusted_proxies: List[str]) -> bool:
+    """
+    Checks if an IP address string matches any entry in trusted_proxies (IPv4/IPv6 address or CIDR network).
+    Reuses is_ip_in_network_list.
+    """
+    return is_ip_in_network_list(ip_str, trusted_proxies)
 
 def hash_api_key(token: str) -> str:
     """Computes SHA-256 digest of an API key token in hex format."""
@@ -431,12 +484,12 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
 
         peer_ip = str(self.client_address[0]).strip()
         try:
-            ipaddress.ip_address(peer_ip)
+            norm_peer_ip = str(normalize_ip_address(peer_ip))
         except ValueError:
             return None, f"Invalid direct socket peer IP address '{peer_ip}'"
 
         if not self.rest_config or not getattr(self.rest_config, "enable_trusted_proxy", False):
-            return peer_ip, None
+            return norm_peer_ip, None
 
         trusted_list = getattr(self.rest_config, "trusted_proxies", []) or []
         if not is_ip_in_trusted_proxies(peer_ip, trusted_list):
@@ -463,7 +516,7 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
         valid_hops = []
         for h in hops:
             try:
-                ip_obj = ipaddress.ip_address(h)
+                ip_obj = normalize_ip_address(h)
                 valid_hops.append(str(ip_obj))
             except ValueError:
                 return None, f"Invalid IP address '{h}' in X-Forwarded-For header"
@@ -521,9 +574,11 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
         if ip_err:
             return (False, f"Client IP resolution failure: {ip_err}", None)
 
-        # IP ellenőrzés
-        if self.rest_config.block_unknown_ips and client_ip not in self.rest_config.allowed_ips:
-            return (False, f"IP {client_ip} blokkolva", None)
+        # IP ellenőrzés - CIDR-támogatással és normalizálással
+        if self.rest_config.block_unknown_ips:
+            allowed_list = getattr(self.rest_config, "allowed_ips", []) or []
+            if not is_ip_in_network_list(client_ip, allowed_list):
+                return (False, f"IP {client_ip} blokkolva", None)
 
         # Global rate limit
         if not self.rate_limiter.is_allowed(f"global:{client_ip}", self.rest_config.rate_limit_global_per_min):
@@ -550,9 +605,10 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 except:
                     pass
             
-            # IP whitelist a kulcshoz
-            if key_obj.ip_whitelist and client_ip not in key_obj.ip_whitelist:
-                return (False, f"IP {client_ip} nincs a kulcs whitelistjén", None)
+            # IP whitelist a kulcshoz - CIDR-támogatással és normalizálással
+            if key_obj.ip_whitelist:
+                if not is_ip_in_network_list(client_ip, key_obj.ip_whitelist):
+                    return (False, f"IP {client_ip} nincs a kulcs whitelistjén", None)
             
             # Rate limit kulcsonként
             if not self.rate_limiter.is_allowed(f"key:{key_hash}", key_obj.rate_limit_per_min):
@@ -756,10 +812,74 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             if not self.check_permission(key_obj, "admin"):
                 self.send_error_json("Nincs admin jog", 403)
                 return
-            
-            name = data.get("name", "unnamed")
-            perms = data.get("permissions", ["read"])
 
+            # 1. Name validation
+            raw_name = data.get("name")
+            if raw_name is None:
+                name = "unnamed"
+            elif not isinstance(raw_name, str):
+                self.send_error_json("Érvénytelen name mező: string típus szükséges", 400)
+                return
+            else:
+                trimmed_name = raw_name.strip()
+                if not trimmed_name:
+                    self.send_error_json("Érvénytelen name mező: nem lehet üres", 400)
+                    return
+                if len(trimmed_name) > 100:
+                    self.send_error_json("Érvénytelen name mező: legfeljebb 100 karakter lehet", 400)
+                    return
+                name = trimmed_name
+
+            # 2. Permissions validation
+            allowed_permissions = {"read", "write", "execute", "admin"}
+            if "permissions" in data:
+                raw_perms = data.get("permissions")
+                if not isinstance(raw_perms, list):
+                    self.send_error_json("Érvénytelen permissions mező: list típus szükséges", 400)
+                    return
+                perms = []
+                for p in raw_perms:
+                    if not isinstance(p, str):
+                        self.send_error_json("Érvénytelen jogosultság: minden elemnek stringnek kell lennie", 400)
+                        return
+                    p_clean = p.strip()
+                    if p_clean not in allowed_permissions:
+                        self.send_error_json(f"Ismeretlen jogosultság: '{p_clean}'. Engedélyezett: {sorted(allowed_permissions)}", 400)
+                        return
+                    if p_clean not in perms:
+                        perms.append(p_clean)
+            else:
+                perms = ["read"]
+
+            # 3. Rate limit validation
+            raw_rate = data.get("rate_limit")
+            if raw_rate is None:
+                rate_limit = 60
+            else:
+                # Explicitly reject boolean True/False (isinstance(True, int) is True in Python)
+                if isinstance(raw_rate, bool) or not isinstance(raw_rate, int):
+                    self.send_error_json("Érvénytelen rate_limit mező: egész szám szükséges (1-10000)", 400)
+                    return
+                if raw_rate < 1 or raw_rate > 10000:
+                    self.send_error_json(f"Érvénytelen rate_limit mező: {raw_rate} kívül esik a megengedett tartományon (1-10000)", 400)
+                    return
+                rate_limit = raw_rate
+
+            # 4. IP Whitelist validation & persistence
+            raw_whitelist = data.get("ip_whitelist")
+            if raw_whitelist is None:
+                ip_whitelist = []
+            else:
+                if not isinstance(raw_whitelist, list):
+                    self.send_error_json("Érvénytelen ip_whitelist mező: list típus szükséges", 400)
+                    return
+                try:
+                    ip_whitelist = validate_ip_network_list(raw_whitelist, param_name="ip_whitelist")
+                except ValueError as e:
+                    self.send_error_json(f"Érvénytelen ip_whitelist bejegyzés: {e}", 400)
+                    return
+
+            # 5. Expiration validation
             expire_days = data.get("expire_days")
             if expire_days is not None:
                 if isinstance(expire_days, bool) or not isinstance(expire_days, (int, float)):
@@ -782,7 +902,8 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 permissions=perms,
                 created_at=datetime.now().isoformat(),
                 expires_at=(datetime.now() + timedelta(days=expire_days)).isoformat() if expire_days else None,
-                rate_limit_per_min=data.get("rate_limit", 60),
+                rate_limit_per_min=rate_limit,
+                ip_whitelist=ip_whitelist,
                 hashed=True
             )
             self.api_keys[key_hash] = api_key
@@ -913,6 +1034,10 @@ class SecureRESTAPIServer:
     def create_key(self, name: str, permissions: List[str] = None, expire_days: int = None, rate_limit: int = 60, ip_whitelist: List[str] = None) -> str:
         if permissions is None:
             permissions = ["read"]
+        if ip_whitelist:
+            validated_wl = validate_ip_network_list(ip_whitelist, param_name="ip_whitelist")
+        else:
+            validated_wl = []
         new_key = secrets.token_urlsafe(32)
         key_hash = hash_api_key(new_key)
         api_key = APIKey(
@@ -922,7 +1047,7 @@ class SecureRESTAPIServer:
             created_at=datetime.now().isoformat(),
             expires_at=(datetime.now() + timedelta(days=expire_days)).isoformat() if expire_days else None,
             rate_limit_per_min=rate_limit,
-            ip_whitelist=ip_whitelist or [],
+            ip_whitelist=validated_wl,
             hashed=True
         )
         self.api_keys[key_hash] = api_key

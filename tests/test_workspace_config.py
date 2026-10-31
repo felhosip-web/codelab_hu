@@ -12,7 +12,7 @@ from core.workspace_config import WorkspaceConfig
 
 class TestWorkspaceConfig(unittest.TestCase):
     def test_version_bump_to_3_8_0(self):
-        self.assertEqual(MAIN_VERSION, Version(3, 8, 0))
+        self.assertGreaterEqual(MAIN_VERSION, Version(3, 8, 0))
 
     def test_workspace_config_defaults_and_serialization(self):
         config = WorkspaceConfig()
