@@ -873,10 +873,8 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 rate_limit = raw_rate
 
             # 4. IP Whitelist validation & persistence
-            raw_whitelist = data.get("ip_whitelist")
-            if raw_whitelist is None:
-                ip_whitelist = []
-            else:
+            if "ip_whitelist" in data:
+                raw_whitelist = data.get("ip_whitelist")
                 if not isinstance(raw_whitelist, list):
                     self.send_error_json("Érvénytelen ip_whitelist mező: list típus szükséges", 400)
                     return
@@ -885,6 +883,8 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 except ValueError as e:
                     self.send_error_json(f"Érvénytelen ip_whitelist bejegyzés: {e}", 400)
                     return
+            else:
+                ip_whitelist = []
 
             # 5. Expiration validation
             expire_days = data.get("expire_days")

@@ -1648,6 +1648,12 @@ class TestBiztPR1SecurityHardening(unittest.TestCase):
         self.assertEqual(s1, 400)
         self.assertEqual(len(self.server.api_keys), initial_count)
 
+        # Explicit null ip_whitelist (e.g. {"ip_whitelist": null})
+        s_null, r_null = self._make_request("/api/v2/keys", method="POST", body={"name": "bad_null", "ip_whitelist": None}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s_null, 400)
+        self.assertIn("érvénytelen ip_whitelist", r_null["error"].lower())
+        self.assertEqual(len(self.server.api_keys), initial_count)
+
         # Malformed IP entry
         s2, r2 = self._make_request("/api/v2/keys", method="POST", body={"name": "bad2", "ip_whitelist": ["invalid_ip_cidr"]}, headers={"X-API-Key": self.admin_key})
         self.assertEqual(s2, 400)
