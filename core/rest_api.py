@@ -69,9 +69,13 @@ def parse_ip_or_network(entry: str) -> ipaddress.IPv4Network | ipaddress.IPv6Net
     except ValueError as e:
         raise ValueError(f"Invalid IP address or CIDR network '{entry}': {e}")
 
-def validate_ip_network_list(entries: List[str], param_name: str = "IP list") -> List[str]:
+def validate_ip_network_list(entries: List[str], param_name: str = "IP list", allow_empty_entries: bool = False) -> List[str]:
     """
     Validates a list of IP/CIDR strings.
+    If allow_empty_entries is False (default for security restrictions such as API key whitelists),
+    empty or whitespace-only entries raise ValueError.
+    If allow_empty_entries is True (used for multiline GUI text inputs such as trusted_proxies),
+    empty or whitespace-only lines are ignored.
     Returns normalized list of non-empty strings if all are valid.
     Raises ValueError if any entry is invalid.
     """
@@ -83,7 +87,9 @@ def validate_ip_network_list(entries: List[str], param_name: str = "IP list") ->
             raise ValueError(f"{param_name} entry at index {idx} must be a string, got {type(entry).__name__}")
         s = entry.strip()
         if not s:
-            continue
+            if allow_empty_entries:
+                continue
+            raise ValueError(f"{param_name} entry at index {idx} cannot be empty or whitespace-only")
         parse_ip_or_network(s)
         normalized.append(s)
     return normalized
@@ -91,10 +97,11 @@ def validate_ip_network_list(entries: List[str], param_name: str = "IP list") ->
 def validate_trusted_proxies(trusted_proxies: List[str]) -> List[str]:
     """
     Validates a list of trusted proxy IP/CIDR strings.
+    Allows empty/blank lines (e.g. from multiline GUI text input).
     Returns normalized list of non-empty strings if all are valid.
     Raises ValueError if any entry is invalid.
     """
-    return validate_ip_network_list(trusted_proxies, param_name="trusted_proxies")
+    return validate_ip_network_list(trusted_proxies, param_name="trusted_proxies", allow_empty_entries=True)
 
 def is_ip_in_network_list(ip_str: str, network_list: List[str]) -> bool:
     """

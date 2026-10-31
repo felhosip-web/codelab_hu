@@ -1654,6 +1654,61 @@ class TestBiztPR1SecurityHardening(unittest.TestCase):
         self.assertIn("érvénytelen ip_whitelist", r2["error"].lower())
         self.assertEqual(len(self.server.api_keys), initial_count)
 
+        # Empty string entry in ip_whitelist
+        s3, r3 = self._make_request("/api/v2/keys", method="POST", body={"name": "bad3", "ip_whitelist": [""]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s3, 400)
+        self.assertIn("érvénytelen ip_whitelist", r3["error"].lower())
+        self.assertEqual(len(self.server.api_keys), initial_count)
+
+        # Whitespace-only entry in ip_whitelist
+        s4, r4 = self._make_request("/api/v2/keys", method="POST", body={"name": "bad4", "ip_whitelist": ["   "]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s4, 400)
+        self.assertIn("érvénytelen ip_whitelist", r4["error"].lower())
+        self.assertEqual(len(self.server.api_keys), initial_count)
+
+        # List containing valid CIDR plus a blank entry
+        s5, r5 = self._make_request("/api/v2/keys", method="POST", body={"name": "bad5", "ip_whitelist": ["10.0.0.0/8", " "]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s5, 400)
+        self.assertIn("érvénytelen ip_whitelist", r5["error"].lower())
+        self.assertEqual(len(self.server.api_keys), initial_count)
+
+        # Verify disk persistence file still only contains initial keys
+        with open(self.keys_path, "r", encoding="utf-8") as f:
+            disk_data = json.load(f)
+        self.assertEqual(len(disk_data), initial_count)
+
+    def test_post_keys_empty_and_omitted_ip_whitelist(self):
+        """Explicitly empty ip_whitelist: [] and omitted ip_whitelist preserve unrestricted behavior."""
+        self.server.start()
+        time.sleep(0.05)
+
+        # 1. Explicit empty list: ip_whitelist: []
+        s1, r1 = self._make_request("/api/v2/keys", method="POST", body={"name": "unrestricted_explicit", "ip_whitelist": []}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s1, 201)
+        self.assertEqual(r1["key_info"]["ip_whitelist"], [])
+        tok1 = r1["api_key"]
+
+        # Request from any IP succeeds
+        s_req1, _ = self._make_request("/api/v2/status", headers={"X-API-Key": tok1})
+        self.assertEqual(s_req1, 200)
+
+        # 2. Omitted ip_whitelist
+        s2, r2 = self._make_request("/api/v2/keys", method="POST", body={"name": "unrestricted_omitted"}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s2, 201)
+        self.assertEqual(r2["key_info"]["ip_whitelist"], [])
+        tok2 = r2["api_key"]
+
+        # Request from any IP succeeds
+        s_req2, _ = self._make_request("/api/v2/status", headers={"X-API-Key": tok2})
+        self.assertEqual(s_req2, 200)
+
+    def test_trusted_proxy_blank_lines_handling(self):
+        """Trusted proxy configuration with blank/empty lines (e.g. from multiline GUI input) continues to work."""
+        from core.rest_api import validate_trusted_proxies
+        raw_gui_proxies = ["127.0.0.1", "   ", "10.0.0.0/8", ""]
+        validated = validate_trusted_proxies(raw_gui_proxies)
+        self.assertEqual(validated, ["127.0.0.1", "10.0.0.0/8"])
+
     def test_post_keys_strict_name_validation(self):
         """SEC-P2-01: Name validation rejects non-string, blank, or >100 char names."""
         self.server.start()
