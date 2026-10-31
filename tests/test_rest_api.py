@@ -3,6 +3,9 @@ import unittest
 import json
 import urllib.request
 import urllib.error
+import http.client
+import tempfile
+import shutil
 import time
 from pathlib import Path
 
@@ -1501,6 +1504,304 @@ class TestSEC05TrustedProxySupport(unittest.TestCase):
         # 4. Request 1 from DIFFERENT Client B using Key 1 -> 200 OK (Client B uses separate bucket global:203.0.113.89)
         s_b, _ = self._make_request("/api/v2/status", headers={"X-API-Key": key1, "X-Forwarded-For": client_b})
         self.assertEqual(s_b, 200)
+
+class TestBiztPR1SecurityHardening(unittest.TestCase):
+    """
+    Unit and integration tests for Bizt-PR#1:
+    - SEC-P1-01: API key IP whitelist persistence and enforcement.
+    - SEC-P1-02: CIDR-aware IPv4 and IPv6 access restrictions and normalization.
+    - SEC-P2-01: Strict API key creation request validation (name, permissions, rate_limit).
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.config_path = Path(self.temp_dir) / "rest_config.json"
+        self.keys_path = Path(self.temp_dir) / "api_keys.json"
+        self.server = SecureRESTAPIServer(config_path=str(self.config_path), keys_path=str(self.keys_path))
+        self.server.config.port = 8991
+        self.server.config.enabled = True
+        self.server.config.require_api_key = True
+        self.server.config.enable_read_endpoints = True
+        self.server.config.enable_admin_endpoints = True
+        self.server.config.block_unknown_ips = False
+        self.admin_key = self.server.create_key("admin_user", permissions=["admin", "read"])
+
+    def tearDown(self):
+        if self.server.is_running():
+            self.server.stop()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _make_request(self, path, method="GET", body=None, headers=None):
+        conn = http.client.HTTPConnection(self.server.config.host, self.server.config.port, timeout=5)
+        h = headers or {}
+        b = json.dumps(body) if body is not None else None
+        if b and "Content-Type" not in h:
+            h["Content-Type"] = "application/json"
+        conn.request(method, path, body=b, headers=h)
+        resp = conn.getresponse()
+        data = resp.read().decode('utf-8')
+        conn.close()
+        try:
+            return resp.status, json.loads(data)
+        except:
+            return resp.status, data
+
+    def test_cidr_ip_matching_helper_ipv4_and_ipv6(self):
+        """Helper is_ip_in_network_list handles IPv4, IPv6, CIDR, and normalizes IPv4-mapped IPv6."""
+        from core.rest_api import is_ip_in_network_list
+
+        # IPv4 exact and CIDR
+        self.assertTrue(is_ip_in_network_list("192.168.1.10", ["192.168.1.0/24"]))
+        self.assertTrue(is_ip_in_network_list("192.168.1.1", ["192.168.1.1"]))
+        self.assertFalse(is_ip_in_network_list("192.168.2.1", ["192.168.1.0/24"]))
+
+        # IPv6 exact and CIDR
+        self.assertTrue(is_ip_in_network_list("2001:db8::1", ["2001:db8::/32"]))
+        self.assertTrue(is_ip_in_network_list("2001:0db8:0000:0000:0000:0000:0000:0001", ["2001:db8::1"]))
+        self.assertFalse(is_ip_in_network_list("2001:db9::1", ["2001:db8::/32"]))
+
+        # IPv4-mapped IPv6 normalization
+        self.assertTrue(is_ip_in_network_list("::ffff:192.168.1.10", ["192.168.1.0/24"]))
+        self.assertTrue(is_ip_in_network_list("192.168.1.10", ["::ffff:192.168.1.0/120"]))
+
+        # Malformed entries safe handling
+        self.assertFalse(is_ip_in_network_list("not_an_ip", ["192.168.1.0/24"]))
+        self.assertFalse(is_ip_in_network_list("192.168.1.10", ["not_a_network"]))
+        self.assertFalse(is_ip_in_network_list("", ["192.168.1.0/24"]))
+        self.assertFalse(is_ip_in_network_list("192.168.1.10", []))
+
+    def test_allowed_ips_cidr_enforcement(self):
+        """RESTConfig.allowed_ips enforces CIDR network restrictions."""
+        self.server.config.enable_trusted_proxy = True
+        self.server.config.trusted_proxies = ["127.0.0.1"]
+        self.server.config.block_unknown_ips = True
+        self.server.config.allowed_ips = ["10.0.0.0/16", "2001:db8::/48"]
+        self.server.start()
+        time.sleep(0.05)
+
+        read_token = self.server.create_key("reader", permissions=["read"])
+
+        # 1. Allowed IPv4 client in 10.0.0.0/16
+        s1, res1 = self._make_request("/api/v2/status", headers={"X-API-Key": read_token, "X-Forwarded-For": "10.0.5.23"})
+        self.assertEqual(s1, 200)
+
+        # 2. Blocked IPv4 client outside 10.0.0.0/16
+        s2, res2 = self._make_request("/api/v2/status", headers={"X-API-Key": read_token, "X-Forwarded-For": "10.1.0.1"})
+        self.assertEqual(s2, 403)
+        self.assertIn("blokkolva", res2["error"])
+
+        # 3. Allowed IPv6 client in 2001:db8::/48
+        s3, res3 = self._make_request("/api/v2/status", headers={"X-API-Key": read_token, "X-Forwarded-For": "2001:db8:0:1::99"})
+        self.assertEqual(s3, 200)
+
+        # 4. Blocked IPv6 client outside 2001:db8::/48
+        s4, res4 = self._make_request("/api/v2/status", headers={"X-API-Key": read_token, "X-Forwarded-For": "2001:db9::1"})
+        self.assertEqual(s4, 403)
+
+    def test_post_keys_ip_whitelist_persisted_and_enforced(self):
+        """SEC-P1-01: POST /api/v2/keys persists ip_whitelist and enforces it on subsequent calls."""
+        self.server.config.enable_trusted_proxy = True
+        self.server.config.trusted_proxies = ["127.0.0.1"]
+        self.server.start()
+        time.sleep(0.05)
+
+        # Create key with CIDR ip_whitelist via POST /api/v2/keys
+        body = {
+            "name": "restricted_service",
+            "permissions": ["read"],
+            "ip_whitelist": ["172.16.0.0/20"]
+        }
+        admin_headers = {"X-API-Key": self.admin_key, "X-Forwarded-For": "203.0.113.199"}
+        status, res = self._make_request("/api/v2/keys", method="POST", body=body, headers=admin_headers)
+        self.assertEqual(status, 201)
+        self.assertIn("api_key", res)
+        self.assertIn("key_info", res)
+        self.assertEqual(res["key_info"]["ip_whitelist"], ["172.16.0.0/20"])
+
+        new_token = res["api_key"]
+        key_hash = hash_api_key(new_token)
+
+        # Verify in-memory and disk persistence
+        self.assertEqual(self.server.api_keys[key_hash].ip_whitelist, ["172.16.0.0/20"])
+        with open(self.keys_path, "r", encoding="utf-8") as f:
+            disk_data = json.load(f)
+        self.assertEqual(disk_data[key_hash]["ip_whitelist"], ["172.16.0.0/20"])
+
+        # 1. Request from matching client in 172.16.0.0/20 -> 200 OK
+        s1, res1 = self._make_request("/api/v2/status", headers={"X-API-Key": new_token, "X-Forwarded-For": "172.16.5.10"})
+        self.assertEqual(s1, 200)
+
+        # 2. Request from client outside 172.16.0.0/20 -> 403 Forbidden
+        s2, res2 = self._make_request("/api/v2/status", headers={"X-API-Key": new_token, "X-Forwarded-For": "172.16.32.1"})
+        self.assertEqual(s2, 403)
+        self.assertIn("nincs a kulcs whitelistjén", res2["error"])
+
+    def test_post_keys_invalid_ip_whitelist_rejected(self):
+        """Malformed ip_whitelist in POST /api/v2/keys returns 400 and creates no key."""
+        self.server.start()
+        time.sleep(0.05)
+
+        initial_count = len(self.server.api_keys)
+
+        # Non-list ip_whitelist
+        s1, r1 = self._make_request("/api/v2/keys", method="POST", body={"name": "bad1", "ip_whitelist": "10.0.0.1"}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s1, 400)
+        self.assertEqual(len(self.server.api_keys), initial_count)
+
+        # Malformed IP entry
+        s2, r2 = self._make_request("/api/v2/keys", method="POST", body={"name": "bad2", "ip_whitelist": ["invalid_ip_cidr"]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s2, 400)
+        self.assertIn("érvénytelen ip_whitelist", r2["error"].lower())
+        self.assertEqual(len(self.server.api_keys), initial_count)
+
+        # Empty string entry in ip_whitelist
+        s3, r3 = self._make_request("/api/v2/keys", method="POST", body={"name": "bad3", "ip_whitelist": [""]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s3, 400)
+        self.assertIn("érvénytelen ip_whitelist", r3["error"].lower())
+        self.assertEqual(len(self.server.api_keys), initial_count)
+
+        # Whitespace-only entry in ip_whitelist
+        s4, r4 = self._make_request("/api/v2/keys", method="POST", body={"name": "bad4", "ip_whitelist": ["   "]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s4, 400)
+        self.assertIn("érvénytelen ip_whitelist", r4["error"].lower())
+        self.assertEqual(len(self.server.api_keys), initial_count)
+
+        # List containing valid CIDR plus a blank entry
+        s5, r5 = self._make_request("/api/v2/keys", method="POST", body={"name": "bad5", "ip_whitelist": ["10.0.0.0/8", " "]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s5, 400)
+        self.assertIn("érvénytelen ip_whitelist", r5["error"].lower())
+        self.assertEqual(len(self.server.api_keys), initial_count)
+
+        # Verify disk persistence file still only contains initial keys
+        with open(self.keys_path, "r", encoding="utf-8") as f:
+            disk_data = json.load(f)
+        self.assertEqual(len(disk_data), initial_count)
+
+    def test_post_keys_empty_and_omitted_ip_whitelist(self):
+        """Explicitly empty ip_whitelist: [] and omitted ip_whitelist preserve unrestricted behavior."""
+        self.server.start()
+        time.sleep(0.05)
+
+        # 1. Explicit empty list: ip_whitelist: []
+        s1, r1 = self._make_request("/api/v2/keys", method="POST", body={"name": "unrestricted_explicit", "ip_whitelist": []}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s1, 201)
+        self.assertEqual(r1["key_info"]["ip_whitelist"], [])
+        tok1 = r1["api_key"]
+
+        # Request from any IP succeeds
+        s_req1, _ = self._make_request("/api/v2/status", headers={"X-API-Key": tok1})
+        self.assertEqual(s_req1, 200)
+
+        # 2. Omitted ip_whitelist
+        s2, r2 = self._make_request("/api/v2/keys", method="POST", body={"name": "unrestricted_omitted"}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s2, 201)
+        self.assertEqual(r2["key_info"]["ip_whitelist"], [])
+        tok2 = r2["api_key"]
+
+        # Request from any IP succeeds
+        s_req2, _ = self._make_request("/api/v2/status", headers={"X-API-Key": tok2})
+        self.assertEqual(s_req2, 200)
+
+    def test_trusted_proxy_blank_lines_handling(self):
+        """Trusted proxy configuration with blank/empty lines (e.g. from multiline GUI input) continues to work."""
+        from core.rest_api import validate_trusted_proxies
+        raw_gui_proxies = ["127.0.0.1", "   ", "10.0.0.0/8", ""]
+        validated = validate_trusted_proxies(raw_gui_proxies)
+        self.assertEqual(validated, ["127.0.0.1", "10.0.0.0/8"])
+
+    def test_post_keys_strict_name_validation(self):
+        """SEC-P2-01: Name validation rejects non-string, blank, or >100 char names."""
+        self.server.start()
+        time.sleep(0.05)
+
+        initial_count = len(self.server.api_keys)
+
+        # Non-string name
+        s1, _ = self._make_request("/api/v2/keys", method="POST", body={"name": 12345}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s1, 400)
+
+        # Empty/whitespace name
+        s2, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "   "}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s2, 400)
+
+        # Name > 100 characters
+        s3, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "a" * 101}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s3, 400)
+
+        # Valid 100-character name accepted
+        s4, r4 = self._make_request("/api/v2/keys", method="POST", body={"name": "a" * 100}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s4, 201)
+        self.assertEqual(len(self.server.api_keys), initial_count + 1)
+
+    def test_post_keys_strict_permissions_validation(self):
+        """SEC-P2-01: Permissions validation rejects non-lists, strings-as-iterables, and unknown roles."""
+        self.server.start()
+        time.sleep(0.05)
+
+        initial_count = len(self.server.api_keys)
+
+        # String instead of list
+        s1, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "p1", "permissions": "admin"}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s1, 400)
+
+        # Non-string item in permissions list
+        s2, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "p2", "permissions": ["read", 123]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s2, 400)
+
+        # Unknown permission
+        s3, r3 = self._make_request("/api/v2/keys", method="POST", body={"name": "p3", "permissions": ["superuser"]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s3, 400)
+        self.assertIn("ismeretlen jogosultság", r3["error"].lower())
+
+        # Empty permissions list is accepted (key with zero permissions)
+        s4, r4 = self._make_request("/api/v2/keys", method="POST", body={"name": "p4", "permissions": []}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s4, 201)
+        self.assertEqual(r4["key_info"]["permissions"], [])
+
+        # Valid permissions accepted
+        s5, r5 = self._make_request("/api/v2/keys", method="POST", body={"name": "p5", "permissions": ["read", "execute", "write", "admin"]}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s5, 201)
+        self.assertEqual(set(r5["key_info"]["permissions"]), {"read", "execute", "write", "admin"})
+
+        self.assertEqual(len(self.server.api_keys), initial_count + 2)
+
+    def test_post_keys_strict_rate_limit_validation(self):
+        """SEC-P2-01: Rate limit must be integer 1-10000; booleans, floats, strings, and bad ranges rejected."""
+        self.server.start()
+        time.sleep(0.05)
+
+        # Boolean True rejected
+        s1, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "r1", "rate_limit": True}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s1, 400)
+
+        # Float rejected
+        s2, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "r2", "rate_limit": 50.5}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s2, 400)
+
+        # Numeric string rejected
+        s3, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "r3", "rate_limit": "100"}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s3, 400)
+
+        # Zero rejected
+        s4, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "r4", "rate_limit": 0}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s4, 400)
+
+        # Negative rejected
+        s5, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "r5", "rate_limit": -10}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s5, 400)
+
+        # Exceeds maximum 10000 rejected
+        s6, _ = self._make_request("/api/v2/keys", method="POST", body={"name": "r6", "rate_limit": 10001}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s6, 400)
+
+        # Valid boundaries 1 and 10000 accepted
+        s7, r7 = self._make_request("/api/v2/keys", method="POST", body={"name": "r7", "rate_limit": 1}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s7, 201)
+        self.assertEqual(r7["key_info"]["rate_limit_per_min"], 1)
+
+        s8, r8 = self._make_request("/api/v2/keys", method="POST", body={"name": "r8", "rate_limit": 10000}, headers={"X-API-Key": self.admin_key})
+        self.assertEqual(s8, 201)
+        self.assertEqual(r8["key_info"]["rate_limit_per_min"], 10000)
 
 if __name__ == "__main__":
     unittest.main()
