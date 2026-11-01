@@ -790,13 +790,14 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 return
             # Guard against arbitrarily large numbers before converting to int or comparing
             max_allowed_bytes = self.rest_config.max_request_size_kb * 1024
-            # If string length exceeds max allowed bytes representation (e.g. > len(str(max_allowed_bytes)) and > max_allowed_bytes)
-            # or if the integer value exceeds max_allowed_bytes, return HTTP 413 cleanly
-            if len(s_cl) > len(str(max_allowed_bytes)) + 5:
+            # Normalize leading zeros while preserving zero representation
+            s_normalized = s_cl.lstrip("0") or "0"
+            # If normalized digit count exceeds max allowed bytes representation plus margin, reject safely with HTTP 413
+            if len(s_normalized) > len(str(max_allowed_bytes)) + 2:
                 self.send_error_json(f"Túl nagy kérés: méret túllépi a megengedett {self.rest_config.max_request_size_kb}KB korlátot", 413)
                 return
             try:
-                content_length = int(s_cl)
+                content_length = int(s_normalized)
             except (ValueError, OverflowError):
                 self.send_error_json("Érvénytelen Content-Length érték", 400)
                 return
@@ -999,6 +1000,17 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
         else:
             self.send_error_json(f"Ismeretlen endpoint: {path}", 404)
 
+class _SyncHTTPServer(HTTPServer):
+    """HTTPServer with reliable startup notification when entering serve_forever()."""
+    def __init__(self, server_address, RequestHandlerClass, ready_event: threading.Event):
+        self._ready_event = ready_event
+        super().__init__(server_address, RequestHandlerClass)
+
+    def serve_forever(self, poll_interval=0.5):
+        self._ready_event.set()
+        super().serve_forever(poll_interval=poll_interval)
+
+
 class SecureRESTAPIServer:
     def __init__(self, config_path="saves/rest_config.json", keys_path="saves/api_keys.json", plugin_loader=None, engine=None):
         self.config_path = Path(config_path)
@@ -1007,6 +1019,7 @@ class SecureRESTAPIServer:
         self.api_keys: Dict[str, APIKey] = {}
         self.server: Optional[HTTPServer] = None
         self.thread: Optional[threading.Thread] = None
+        self._ready_event = threading.Event()
         self._coordinator_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._stopping: bool = False
@@ -1171,18 +1184,22 @@ class SecureRESTAPIServer:
             SecureRESTHandler.engine = self.engine
 
             try:
-                self.server = HTTPServer((self.config.host, self.config.port), SecureRESTHandler)
+                self._ready_event.clear()
+                self.server = _SyncHTTPServer((self.config.host, self.config.port), SecureRESTHandler, ready_event=self._ready_event)
                 self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
                 self._stop_event.clear()
                 self._stopping = False
                 self._coordinator_thread = None
                 self.thread.start()
+                # Ensure server is listening and entered serving loop before releasing start()
+                self._ready_event.wait(timeout=2.0)
                 print(f"REST API indítva: http://{self.config.host}:{self.config.port}")
                 return True
             except Exception as e:
                 print(f"REST API indítási hiba: {e}")
                 self.server = None
                 self.thread = None
+                self._ready_event.set()
                 self._stopping = False
                 self._stop_event.set()
                 return False
@@ -1213,8 +1230,13 @@ class SecureRESTAPIServer:
                 stop_event = self._stop_event
                 server_thread = thread
 
+                ready_ev = self._ready_event
+
                 def _shutdown_coordinator(srv: HTTPServer, th: Optional[threading.Thread]):
                     try:
+                        # Wait until serving loop has actually started before calling shutdown()
+                        # to prevent BaseServer.shutdown() from deadlocking
+                        ready_ev.wait(timeout=3.0)
                         srv.shutdown()
                     except Exception as e:
                         print(f"Hiba a REST server leállításakor: {e}")

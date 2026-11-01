@@ -2067,14 +2067,17 @@ class TestServerLifecycle(unittest.TestCase):
         # Temporarily use SelfStoppingHandler
         orig_start = server.start
         def custom_start():
+            from core.rest_api import _SyncHTTPServer
             with server._lock:
                 if server.server or server._stopping:
                     return False
-                server.server = HTTPServer((server.config.host, server.config.port), SelfStoppingHandler)
+                server._ready_event.clear()
+                server.server = _SyncHTTPServer((server.config.host, server.config.port), SelfStoppingHandler, ready_event=server._ready_event)
                 server.thread = threading.Thread(target=server.server.serve_forever, daemon=True)
                 server._stop_event.clear()
                 server._stopping = False
                 server.thread.start()
+                server._ready_event.wait(timeout=2.0)
                 return True
 
         self.assertTrue(custom_start())
@@ -2132,11 +2135,14 @@ class TestServerLifecycle(unittest.TestCase):
                 self.wfile.write(b"unblocked")
 
         with server._lock:
-            server.server = HTTPServer((server.config.host, server.config.port), BlockingHandler)
+            from core.rest_api import _SyncHTTPServer
+            server._ready_event.clear()
+            server.server = _SyncHTTPServer((server.config.host, server.config.port), BlockingHandler, ready_event=server._ready_event)
             server.thread = threading.Thread(target=server.server.serve_forever, daemon=True)
             server._stop_event.clear()
             server._stopping = False
             server.thread.start()
+            server._ready_event.wait(timeout=2.0)
 
         serving_th = server.thread
 
@@ -2192,6 +2198,29 @@ class TestServerLifecycle(unittest.TestCase):
         self.assertTrue(server.start())
         self.assertTrue(server.is_running())
         server.stop(timeout=1.0)
+        self.assertFalse(server.is_running())
+
+    def test_immediate_start_stop_race_repeated(self):
+        """P2-03: Repeated immediate start() and stop() without race condition or deadlock."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        for i in range(5):
+            started = server.start()
+            self.assertTrue(started, f"Failed to start on iteration {i}")
+            serving_thread = server.thread
+            stopped = server.stop(timeout=3.0)
+            self.assertTrue(stopped, f"Stop timed out on iteration {i}")
+            self.assertFalse(server.is_running())
+            serving_thread.join(timeout=2.0)
+            self.assertFalse(serving_thread.is_alive())
+
+        # Verify socket released: start final time and stop cleanly
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=2.0)
         self.assertFalse(server.is_running())
 
 class TestContentLengthHandling(unittest.TestCase):
@@ -2251,6 +2280,15 @@ class TestContentLengthHandling(unittest.TestCase):
     def test_valid_content_length(self):
         body = json.dumps({"name": "valid_key", "permissions": ["read"]}).encode("utf-8")
         status, data = self._raw_post({"Content-Length": str(len(body))}, body)
+        self.assertEqual(status, 201)
+        self.assertIn("api_key", data)
+
+    def test_content_length_with_leading_zeros_accepted(self):
+        """P2-04: Valid Content-Length with many leading zeros must be accepted and not treated as oversized."""
+        body = json.dumps({"name": "leading_zeros_key", "permissions": ["read"]}).encode("utf-8")
+        # Prepend 25 leading zeros to the actual length
+        cl_str = "0000000000000000000000000" + str(len(body))
+        status, data = self._raw_post({"Content-Length": cl_str}, body)
         self.assertEqual(status, 201)
         self.assertIn("api_key", data)
 
