@@ -2395,6 +2395,68 @@ class TestServerLifecycle(unittest.TestCase):
             server.stop(timeout=2.0)
             self.assertFalse(server.is_running())
 
+    def test_cancellation_at_exact_post_check_pre_entry_boundary(self):
+        """P2-03: When worker passes cancellation check and releases lock but is cancelled immediately before serve_forever."""
+        from core.rest_api import _SyncHTTPServer
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        worker_at_boundary = threading.Event()
+        release_worker_to_enter_loop = threading.Event()
+        shutdown_called = [False]
+        orig_shutdown = _SyncHTTPServer.shutdown
+
+        def spy_shutdown(srv_self):
+            shutdown_called[0] = True
+            orig_shutdown(srv_self)
+
+        orig_run_gated = _SyncHTTPServer.run_gated_serving_loop
+
+        def gated_paused_after_check(srv_self, *args, **kwargs):
+            # 1. Acquire lock and check cancellation (passes, as cancel is not yet set)
+            with srv_self._start_handshake_lock:
+                if srv_self._cancel_startup_event.is_set():
+                    return
+
+            # 2. EXACT BOUNDARY: Lock is now released, but serve_forever has NOT yet been called!
+            worker_at_boundary.set()
+            release_worker_to_enter_loop.wait(timeout=5.0)
+
+            # 3. Proceed to call serve_forever
+            srv_self.serve_forever(poll_interval=0.05)
+
+        with patch.object(_SyncHTTPServer, "shutdown", spy_shutdown), \
+             patch.object(_SyncHTTPServer, "run_gated_serving_loop", gated_paused_after_check):
+            with patch.object(server._ready_event, "wait", return_value=False):
+                started = server.start()
+                self.assertFalse(started)
+                # Cleanup is now active, server reports stopping
+                self.assertTrue(server.is_running())
+
+            # Worker paused at the exact boundary
+            self.assertTrue(worker_at_boundary.wait(timeout=3.0))
+
+            # BaseServer.shutdown() must NOT have been called while worker is paused at boundary
+            self.assertFalse(shutdown_called[0], "shutdown() must not be called based on pre-entry assumption")
+
+            # Release worker so it proceeds into serve_forever
+            release_worker_to_enter_loop.set()
+
+            # Wait for cleanup coordinator to finish
+            self.assertTrue(server._stop_event.wait(timeout=3.0))
+            self.assertFalse(server.is_running())
+
+            # Verify that shutdown() was still never called (because service_actions aborted on cancel)
+            self.assertFalse(shutdown_called[0], "shutdown() should not be called when loop aborted via cancellation")
+
+            # Verify listening socket was freed and restart succeeds
+            self.assertTrue(server.start())
+            self.assertTrue(server.is_running())
+            server.stop(timeout=2.0)
+            self.assertFalse(server.is_running())
+
 class TestContentLengthHandling(unittest.TestCase):
     """P2-04: Malformed, non-numeric, negative, duplicate, or oversized Content-Length tests."""
 
