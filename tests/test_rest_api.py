@@ -2412,23 +2412,14 @@ class TestServerLifecycle(unittest.TestCase):
             shutdown_called[0] = True
             orig_shutdown(srv_self)
 
-        orig_run_gated = _SyncHTTPServer.run_gated_serving_loop
-
-        def gated_paused_after_check(srv_self, *args, **kwargs):
-            # 1. Acquire lock and check cancellation (passes, as cancel is not yet set)
-            with srv_self._start_handshake_lock:
-                if srv_self._cancel_startup_event.is_set():
-                    return
-
-            # 2. EXACT BOUNDARY: Lock is now released, but serve_forever has NOT yet been called!
+        def pause_at_post_gate_boundary(srv_self):
+            # EXACT BOUNDARY: Executed by real production run_gated_serving_loop()
+            # after cancellation check and lock release, but immediately before serve_forever()
             worker_at_boundary.set()
             release_worker_to_enter_loop.wait(timeout=5.0)
 
-            # 3. Proceed to call serve_forever
-            srv_self.serve_forever(poll_interval=0.05)
-
         with patch.object(_SyncHTTPServer, "shutdown", spy_shutdown), \
-             patch.object(_SyncHTTPServer, "run_gated_serving_loop", gated_paused_after_check):
+             patch.object(_SyncHTTPServer, "_on_post_gate_before_serve", pause_at_post_gate_boundary):
             with patch.object(server._ready_event, "wait", return_value=False):
                 started = server.start()
                 self.assertFalse(started)

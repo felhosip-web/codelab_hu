@@ -1020,6 +1020,10 @@ class _SyncHTTPServer(HTTPServer):
             self._ready_event.set()
         super().service_actions()
 
+    def _on_post_gate_before_serve(self):
+        """Test seam hook executed immediately after gate check and lock release, before serve_forever()."""
+        pass
+
     def run_gated_serving_loop(self, poll_interval: float = 0.1):
         """
         Executes serve_forever only if startup has not been cancelled before loop entry.
@@ -1029,6 +1033,7 @@ class _SyncHTTPServer(HTTPServer):
             if self._cancel_startup_event.is_set():
                 return
 
+        self._on_post_gate_before_serve()
         self.serve_forever(poll_interval=poll_interval)
 
     def request_shutdown(self):
