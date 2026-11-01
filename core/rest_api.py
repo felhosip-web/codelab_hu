@@ -1011,6 +1011,10 @@ class _SyncHTTPServer(HTTPServer):
         self._ready_event.set()
         super().service_actions()
 
+    def request_shutdown(self):
+        """Signals serve_forever to stop without blocking on __is_shut_down."""
+        self._BaseServer__shutdown_request = True
+
 
 class SecureRESTAPIServer:
     def __init__(self, config_path="saves/rest_config.json", keys_path="saves/api_keys.json", plugin_loader=None, engine=None):
@@ -1215,14 +1219,26 @@ class SecureRESTAPIServer:
 
                     def _startup_timeout_cleanup(srv_obj: HTTPServer, th_obj: Optional[threading.Thread], ready_ev: threading.Event):
                         try:
-                            ready_ev.wait(timeout=2.0)
-                            srv_obj.shutdown()
+                            # Check whether readiness was reached before attempting shutdown()
+                            is_ready = ready_ev.is_set()
+                            if not is_ready:
+                                # Give brief bounded window in case loop was just starting
+                                is_ready = ready_ev.wait(timeout=0.2)
+
+                            if is_ready:
+                                srv_obj.shutdown()
+                            else:
+                                # Never call shutdown() if readiness was never confirmed!
+                                if hasattr(srv_obj, "request_shutdown"):
+                                    srv_obj.request_shutdown()
+                                else:
+                                    srv_obj._BaseServer__shutdown_request = True
                         except Exception as ex:
                             print(f"Hiba a timeoutolt szerver leállításakor: {ex}")
 
                         if th_obj and th_obj.is_alive():
                             try:
-                                th_obj.join()
+                                th_obj.join(timeout=2.0)
                             except Exception as ex:
                                 print(f"Hiba a timeoutolt szerver szál bevárásakor: {ex}")
 
@@ -1231,10 +1247,14 @@ class SecureRESTAPIServer:
                         except Exception as ex:
                             print(f"Hiba a timeoutolt szerver socket lezárásakor: {ex}")
 
-                        with self._lock:
-                            self._stopping = False
-                            self._stop_event.set()
-                            self._ready_event.set()
+                        # Only restore stopped state if thread is confirmed dead
+                        if th_obj is None or not th_obj.is_alive():
+                            with self._lock:
+                                self._stopping = False
+                                self._stop_event.set()
+                                self._ready_event.set()
+                        else:
+                            print("Figyelmeztetés: a timeoutolt szerver szál még aktív, leállítás folyamatban marad")
 
                     coord = threading.Thread(
                         target=_startup_timeout_cleanup,

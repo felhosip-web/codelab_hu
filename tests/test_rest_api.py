@@ -2293,6 +2293,55 @@ class TestServerLifecycle(unittest.TestCase):
         server.stop(timeout=2.0)
         self.assertFalse(server.is_running())
 
+    def test_startup_timeout_when_loop_never_initializes_does_not_call_shutdown(self):
+        """P2-03: When serve_forever loop never initializes, shutdown() is not called and coordinator does not hang."""
+        from core.rest_api import _SyncHTTPServer
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        shutdown_called = [False]
+        orig_shutdown = _SyncHTTPServer.shutdown
+
+        def spy_shutdown(srv_self):
+            shutdown_called[0] = True
+            orig_shutdown(srv_self)
+
+        # Mock target so serve_forever never runs at all (thread just sleeps briefly or does dummy wait)
+        dummy_thread_event = threading.Event()
+        def dummy_thread_target(*args, **kwargs):
+            dummy_thread_event.wait(timeout=1.0)
+
+        real_thread_cls = threading.Thread
+        def mock_thread(*args, **kwargs):
+            # Only intercept the server worker thread created with poll_interval kwargs
+            if "kwargs" in kwargs and "poll_interval" in kwargs["kwargs"]:
+                return real_thread_cls(target=dummy_thread_target, daemon=True)
+            return real_thread_cls(*args, **kwargs)
+
+        with patch.object(_SyncHTTPServer, "shutdown", spy_shutdown), \
+             patch("threading.Thread", side_effect=mock_thread):
+            started = server.start()
+            self.assertFalse(started)
+            self.assertTrue(server.is_running())
+
+        # Release dummy thread
+        dummy_thread_event.set()
+
+        # Wait for cleanup to finish
+        self.assertTrue(server._stop_event.wait(timeout=3.0))
+        self.assertFalse(server.is_running())
+
+        # BaseServer.shutdown() must NEVER have been called because readiness was never confirmed
+        self.assertFalse(shutdown_called[0], "shutdown() should not be called when loop never initialized")
+
+        # Port must be free and reusable
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=2.0)
+        self.assertFalse(server.is_running())
+
 class TestContentLengthHandling(unittest.TestCase):
     """P2-04: Malformed, non-numeric, negative, duplicate, or oversized Content-Length tests."""
 
