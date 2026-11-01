@@ -4,6 +4,7 @@ import json
 import urllib.request
 import urllib.error
 import http.client
+from http.server import HTTPServer
 import tempfile
 import shutil
 import time
@@ -12,7 +13,7 @@ from pathlib import Path
 from core.plugin_system import PluginLoader
 from core.engine import Engine
 import threading
-from core.rest_api import SecureRESTAPIServer, RESTConfig, _run_in_sandbox_process, hash_api_key, RateLimiter
+from core.rest_api import SecureRESTAPIServer, SecureRESTHandler, RESTConfig, _run_in_sandbox_process, hash_api_key, RateLimiter
 from core.version import REST_API_VERSION, API_MANAGER_VERSION, MAIN_VERSION
 from datetime import datetime, timedelta
 
@@ -1944,6 +1945,34 @@ class TestRateLimiter(unittest.TestCase):
         total = sum(len(ts) for ts in limiter.requests.values())
         self.assertEqual(total, num_threads * requests_per_thread)
 
+    def test_concurrent_rate_limit_enforcement_with_barrier(self):
+        """P2-02: Deterministic test that rate limit is strictly enforced under high contention."""
+        limiter = RateLimiter()
+        limit = 5
+        num_threads = 20
+        barrier = threading.Barrier(num_threads)
+        results = []
+        lock = threading.Lock()
+
+        def worker():
+            barrier.wait()  # synchronize all threads to start simultaneously
+            allowed = limiter.is_allowed("contended_client", limit)
+            with lock:
+                results.append(allowed)
+
+        threads = [threading.Thread(target=worker) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        accepted = sum(1 for r in results if r is True)
+        rejected = sum(1 for r in results if r is False)
+
+        self.assertEqual(accepted, limit)
+        self.assertEqual(rejected, num_threads - limit)
+        self.assertEqual(len(limiter.requests["contended_client"]), limit)
+
 class TestServerLifecycle(unittest.TestCase):
     """P2-03: REST server lifecycle, stop idempotency, socket release, and thread cleanup."""
 
@@ -2013,6 +2042,76 @@ class TestServerLifecycle(unittest.TestCase):
         self.assertTrue(server.is_running())
         server.stop()
         self.assertFalse(server.is_running())
+
+    def test_stop_invoked_from_serving_thread(self):
+        """P2-03: Real regression test verifying stop() invoked from the actual serving thread."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        # Custom handler subclass to trigger stop from within the serving thread during a request
+        stop_called = threading.Event()
+        caller_is_serving_thread = [False]
+
+        class SelfStoppingHandler(SecureRESTHandler):
+            def do_GET(self):
+                caller_is_serving_thread[0] = (threading.current_thread() == server.thread)
+                # Call stop() directly on server from the serving thread
+                server.stop()
+                stop_called.set()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+        # Temporarily use SelfStoppingHandler
+        orig_start = server.start
+        def custom_start():
+            with server._lock:
+                if server.server or server._stopping:
+                    return False
+                server.server = HTTPServer((server.config.host, server.config.port), SelfStoppingHandler)
+                server.thread = threading.Thread(target=server.server.serve_forever, daemon=True)
+                server._stop_event.clear()
+                server._stopping = False
+                server.thread.start()
+                return True
+
+        self.assertTrue(custom_start())
+        serving_thread = server.thread
+        self.assertTrue(server.is_running())
+
+        # Trigger request from client thread
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", 8899, timeout=3)
+            conn.request("GET", "/")
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+        except Exception:
+            pass
+
+        # Verify stop was initiated by serving thread
+        self.assertTrue(stop_called.wait(timeout=3.0))
+        self.assertTrue(caller_is_serving_thread[0])
+
+        # Verify serving thread terminated and stop event completed without deadlocking
+        serving_thread.join(timeout=3.0)
+        self.assertFalse(serving_thread.is_alive())
+        self.assertTrue(server._stop_event.wait(timeout=3.0))
+
+        # Verify listening socket was freed: can start a new SecureRESTAPIServer or bind socket with SO_REUSEADDR
+        import socket
+        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            test_sock.bind(("127.0.0.1", 8899))
+            bound = True
+        except OSError:
+            bound = False
+        finally:
+            test_sock.close()
+        self.assertTrue(bound, "Port 8899 was not released after serving-thread shutdown")
 
 class TestContentLengthHandling(unittest.TestCase):
     """P2-04: Malformed, non-numeric, negative, duplicate, or oversized Content-Length tests."""
@@ -2093,6 +2192,21 @@ class TestContentLengthHandling(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("error", data)
 
+    def test_unicode_digit_content_length(self):
+        """P2-04: Unicode digits (such as ², ³, etc.) must be rejected with HTTP 400."""
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": "²"}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_extremely_long_digit_sequence_content_length(self):
+        """P2-04: Extremely long digit sequence must be rejected with HTTP 413 without crashing or reading unbounded body."""
+        body = b'{"name": "test"}'
+        huge_cl = "9" * 100
+        status, data = self._raw_post({"Content-Length": huge_cl}, body)
+        self.assertEqual(status, 413)
+        self.assertIn("Túl nagy kérés", data.get("error", ""))
+
     def test_negative_content_length(self):
         body = b'{"name": "test"}'
         status, data = self._raw_post({"Content-Length": "-50"}, body)
@@ -2102,6 +2216,12 @@ class TestContentLengthHandling(unittest.TestCase):
     def test_empty_content_length(self):
         body = b'{"name": "test"}'
         status, data = self._raw_post({"Content-Length": ""}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_whitespace_content_length(self):
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": "   "}, body)
         self.assertEqual(status, 400)
         self.assertIn("error", data)
 

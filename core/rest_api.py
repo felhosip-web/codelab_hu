@@ -784,16 +784,28 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
                 self.send_error_json("Érvénytelen Content-Length fejléc: hiányzó érték", 400)
                 return
             s_cl = str(raw_cl).strip()
-            if not s_cl or not s_cl.isdigit():
-                self.send_error_json("Érvénytelen Content-Length: nem negatív egész szám szükséges", 400)
+            # Strict ASCII decimal digits only (0-9) - reject Unicode digits, whitespace, signs
+            if not s_cl or not re.match(r"^[0-9]+$", s_cl):
+                self.send_error_json("Érvénytelen Content-Length: csak ASCII decimális számjegyek engedélyezettek", 400)
                 return
-            content_length = int(s_cl)
+            # Guard against arbitrarily large numbers before converting to int or comparing
+            max_allowed_bytes = self.rest_config.max_request_size_kb * 1024
+            # If string length exceeds max allowed bytes representation (e.g. > len(str(max_allowed_bytes)) and > max_allowed_bytes)
+            # or if the integer value exceeds max_allowed_bytes, return HTTP 413 cleanly
+            if len(s_cl) > len(str(max_allowed_bytes)) + 5:
+                self.send_error_json(f"Túl nagy kérés: méret túllépi a megengedett {self.rest_config.max_request_size_kb}KB korlátot", 413)
+                return
+            try:
+                content_length = int(s_cl)
+            except (ValueError, OverflowError):
+                self.send_error_json("Érvénytelen Content-Length érték", 400)
+                return
+
+            if content_length > max_allowed_bytes:
+                self.send_error_json(f"Túl nagy kérés: {content_length} > {self.rest_config.max_request_size_kb}KB", 413)
+                return
         else:
             content_length = 0
-
-        if content_length > self.rest_config.max_request_size_kb * 1024:
-            self.send_error_json(f"Túl nagy kérés: {content_length} > {self.rest_config.max_request_size_kb}KB", 413)
-            return
         
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -996,6 +1008,9 @@ class SecureRESTAPIServer:
         self.server: Optional[HTTPServer] = None
         self.thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._stopping: bool = False
+        self._stop_event = threading.Event()
+        self._stop_event.set()
         self.plugin_loader = plugin_loader
         self.engine = engine
         self.load_config()
@@ -1140,7 +1155,7 @@ class SecureRESTAPIServer:
     
     def start(self):
         with self._lock:
-            if self.server:
+            if self.server or self._stopping:
                 return False
 
             if not self.config.enabled:
@@ -1157,6 +1172,8 @@ class SecureRESTAPIServer:
             try:
                 self.server = HTTPServer((self.config.host, self.config.port), SecureRESTHandler)
                 self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+                self._stop_event.clear()
+                self._stopping = False
                 self.thread.start()
                 print(f"REST API indítva: http://{self.config.host}:{self.config.port}")
                 return True
@@ -1164,44 +1181,54 @@ class SecureRESTAPIServer:
                 print(f"REST API indítási hiba: {e}")
                 self.server = None
                 self.thread = None
+                self._stopping = False
+                self._stop_event.set()
                 return False
     
     def stop(self, timeout: float = 5.0):
         with self._lock:
+            if not self.server:
+                return
             server = self.server
             thread = self.thread
             self.server = None
             self.thread = None
+            self._stopping = True
 
-        if not server:
-            return
+        def _do_shutdown_and_close(srv: HTTPServer, th: Optional[threading.Thread], join_timeout: float):
+            try:
+                srv.shutdown()
+            except Exception as e:
+                print(f"Hiba a REST server leállításakor: {e}")
+
+            if th and th.is_alive() and threading.current_thread() != th:
+                th.join(timeout=join_timeout)
+                if th.is_alive():
+                    print(f"Figyelmeztetés: a REST server szál nem állt le {join_timeout}s alatt")
+
+            try:
+                srv.server_close()
+            except Exception as e:
+                print(f"Hiba a REST server socket lezárásakor: {e}")
+
+            with self._lock:
+                self._stopping = False
+                self._stop_event.set()
+            print("REST API leállítva")
 
         current_th = threading.current_thread()
         if thread and current_th == thread:
-            # Avoid deadlock if called directly from the serving thread
-            try:
-                server.server_close()
-            except Exception as e:
-                print(f"Hiba a socket lezárásakor: {e}")
+            # Called directly from serving thread: avoid deadlock by delegating shutdown to a background thread
+            bg_th = threading.Thread(
+                target=_do_shutdown_and_close,
+                args=(server, thread, timeout),
+                daemon=True
+            )
+            bg_th.start()
             return
 
-        try:
-            server.shutdown()
-        except Exception as e:
-            print(f"Hiba a REST server leállításakor: {e}")
-
-        if thread and thread.is_alive():
-            thread.join(timeout=timeout)
-            if thread.is_alive():
-                print(f"Figyelmeztetés: a REST server szál nem állt le {timeout}s alatt")
-
-        try:
-            server.server_close()
-        except Exception as e:
-            print(f"Hiba a REST server socket lezárásakor: {e}")
-
-        print("REST API leállítva")
+        _do_shutdown_and_close(server, thread, timeout)
     
     def is_running(self) -> bool:
         with self._lock:
-            return self.server is not None
+            return self.server is not None and not self._stopping
