@@ -199,22 +199,61 @@ class RESTConfig:
         return RESTConfig(**cfg_data)
 
 class RateLimiter:
-    def __init__(self):
+    def __init__(self, time_func: Callable[[], float] = time.time, cleanup_interval_sec: float = 60.0):
+        self.time_func = time_func
+        self.cleanup_interval_sec = cleanup_interval_sec
+        self._last_cleanup = self.time_func()
         self.requests: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
     
     def is_allowed(self, identifier: str, limit_per_min: int) -> bool:
-        now = time.time()
-        if identifier not in self.requests:
-            self.requests[identifier] = []
-        
-        # Töröljük a régi kéréseket (1 percnél régebbi)
-        self.requests[identifier] = [t for t in self.requests[identifier] if now - t < 60]
-        
-        if len(self.requests[identifier]) >= limit_per_min:
-            return False
-        
-        self.requests[identifier].append(now)
-        return True
+        now = self.time_func()
+        with self._lock:
+            # Opportunisztikus takarítás lejárt azonosítókra a memóriaszivárgás ellen
+            if now - self._last_cleanup >= self.cleanup_interval_sec:
+                self._cleanup_expired_locked(now)
+                self._last_cleanup = now
+
+            # Töröljük a régi kéréseket (1 percnél régebbi) az adott azonosítóhoz
+            existing = self.requests.get(identifier)
+            if existing is not None:
+                active = [t for t in existing if now - t < 60]
+                if not active:
+                    del self.requests[identifier]
+                else:
+                    self.requests[identifier] = active
+
+            # Ha túllépi a limitet, elutasítjuk
+            current_count = len(self.requests.get(identifier, []))
+            if current_count >= limit_per_min:
+                return False
+
+            if identifier not in self.requests:
+                self.requests[identifier] = []
+            self.requests[identifier].append(now)
+            return True
+
+    def _cleanup_expired_locked(self, now: float) -> int:
+        keys_to_delete = []
+        for identifier, timestamps in self.requests.items():
+            active = [t for t in timestamps if now - t < 60]
+            if not active:
+                keys_to_delete.append(identifier)
+            else:
+                self.requests[identifier] = active
+        for identifier in keys_to_delete:
+            del self.requests[identifier]
+        return len(keys_to_delete)
+
+    def cleanup_expired(self) -> int:
+        """
+        Kifejezett tisztítás az összes lejárt azonosítóra.
+        Visszatér a törölt azonosítók számával.
+        """
+        now = self.time_func()
+        with self._lock:
+            self._last_cleanup = now
+            return self._cleanup_expired_locked(now)
 
 def _serialize_val(val):
     if isinstance(val, (int, float, str, bool, type(None))):
@@ -730,11 +769,44 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             self.send_error_json(error_msg, 403)
             return
         
-        # Méret ellenőrzés
-        content_length = int(self.headers.get('Content-Length', 0))
-        if content_length > self.rest_config.max_request_size_kb * 1024:
-            self.send_error_json(f"Túl nagy kérés: {content_length} > {self.rest_config.max_request_size_kb}KB", 413)
+        # Content-Length ellenőrzés (P2-04)
+        cl_headers = []
+        if hasattr(self, 'headers') and self.headers is not None:
+            cl_headers = self.headers.get_all('Content-Length') or self.headers.get_all('content-length') or []
+
+        if len(cl_headers) > 1:
+            self.send_error_json("Többszörös vagy kétértelmű Content-Length fejléc", 400)
             return
+
+        if len(cl_headers) == 1:
+            raw_cl = cl_headers[0]
+            if raw_cl is None:
+                self.send_error_json("Érvénytelen Content-Length fejléc: hiányzó érték", 400)
+                return
+            s_cl = str(raw_cl).strip()
+            # Strict ASCII decimal digits only (0-9) - reject Unicode digits, whitespace, signs
+            if not s_cl or not re.match(r"^[0-9]+$", s_cl):
+                self.send_error_json("Érvénytelen Content-Length: csak ASCII decimális számjegyek engedélyezettek", 400)
+                return
+            # Guard against arbitrarily large numbers before converting to int or comparing
+            max_allowed_bytes = self.rest_config.max_request_size_kb * 1024
+            # Normalize leading zeros while preserving zero representation
+            s_normalized = s_cl.lstrip("0") or "0"
+            # If normalized digit count exceeds max allowed bytes representation plus margin, reject safely with HTTP 413
+            if len(s_normalized) > len(str(max_allowed_bytes)) + 2:
+                self.send_error_json(f"Túl nagy kérés: méret túllépi a megengedett {self.rest_config.max_request_size_kb}KB korlátot", 413)
+                return
+            try:
+                content_length = int(s_normalized)
+            except (ValueError, OverflowError):
+                self.send_error_json("Érvénytelen Content-Length érték", 400)
+                return
+
+            if content_length > max_allowed_bytes:
+                self.send_error_json(f"Túl nagy kérés: {content_length} > {self.rest_config.max_request_size_kb}KB", 413)
+                return
+        else:
+            content_length = 0
         
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -928,6 +1000,47 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
         else:
             self.send_error_json(f"Ismeretlen endpoint: {path}", 404)
 
+class _SyncHTTPServer(HTTPServer):
+    """HTTPServer with reliable startup notification from inside serve_forever() and startup cancellation support."""
+    def __init__(self, server_address, RequestHandlerClass, ready_event: threading.Event):
+        self._ready_event = ready_event
+        self._start_handshake_lock = threading.Lock()
+        self._cancel_startup_event = threading.Event()
+        self._active_in_serving_loop = False
+        super().__init__(server_address, RequestHandlerClass)
+
+    def service_actions(self):
+        """Called from inside the active BaseServer.serve_forever() loop."""
+        with self._start_handshake_lock:
+            if self._cancel_startup_event.is_set():
+                # Startup was cancelled before loop became active: exit loop immediately
+                self._BaseServer__shutdown_request = True
+                return
+            self._active_in_serving_loop = True
+            self._ready_event.set()
+        super().service_actions()
+
+    def _on_post_gate_before_serve(self):
+        """Test seam hook executed immediately after gate check and lock release, before serve_forever()."""
+        pass
+
+    def run_gated_serving_loop(self, poll_interval: float = 0.1):
+        """
+        Executes serve_forever only if startup has not been cancelled before loop entry.
+        Guarantees deterministic handshake between start() timeout and worker loop entry.
+        """
+        with self._start_handshake_lock:
+            if self._cancel_startup_event.is_set():
+                return
+
+        self._on_post_gate_before_serve()
+        self.serve_forever(poll_interval=poll_interval)
+
+    def request_shutdown(self):
+        """Signals serve_forever to stop without blocking on __is_shut_down."""
+        self._BaseServer__shutdown_request = True
+
+
 class SecureRESTAPIServer:
     def __init__(self, config_path="saves/rest_config.json", keys_path="saves/api_keys.json", plugin_loader=None, engine=None):
         self.config_path = Path(config_path)
@@ -936,6 +1049,12 @@ class SecureRESTAPIServer:
         self.api_keys: Dict[str, APIKey] = {}
         self.server: Optional[HTTPServer] = None
         self.thread: Optional[threading.Thread] = None
+        self._ready_event = threading.Event()
+        self._coordinator_thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        self._stopping: bool = False
+        self._stop_event = threading.Event()
+        self._stop_event.set()
         self.plugin_loader = plugin_loader
         self.engine = engine
         self.load_config()
@@ -1079,37 +1198,195 @@ class SecureRESTAPIServer:
         return list(self.api_keys.values())
     
     def start(self):
-        if self.server:
-            return False
-        
-        if not self.config.enabled:
-            print("REST API tiltva a configban, nem indul")
-            return False
-        
-        # Beállítjuk a handler osztály változóit
-        SecureRESTHandler.rest_config = self.config
-        SecureRESTHandler.api_keys = self.api_keys
-        SecureRESTHandler.server_instance = self
-        SecureRESTHandler.plugin_loader = self.plugin_loader
-        SecureRESTHandler.engine = self.engine
-        
-        try:
-            self.server = HTTPServer((self.config.host, self.config.port), SecureRESTHandler)
-            self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-            self.thread.start()
-            print(f"REST API indítva: http://{self.config.host}:{self.config.port}")
-            return True
-        except Exception as e:
-            print(f"REST API indítási hiba: {e}")
-            return False
+        with self._lock:
+            if self.server or self._stopping or not self._stop_event.is_set():
+                return False
+
+            if not self.config.enabled:
+                print("REST API tiltva a configban, nem indul")
+                return False
+
+            # Beállítjuk a handler osztály változóit
+            SecureRESTHandler.rest_config = self.config
+            SecureRESTHandler.api_keys = self.api_keys
+            SecureRESTHandler.server_instance = self
+            SecureRESTHandler.plugin_loader = self.plugin_loader
+            SecureRESTHandler.engine = self.engine
+
+            created_srv = None
+            created_th = None
+            try:
+                self._ready_event.clear()
+                created_srv = _SyncHTTPServer((self.config.host, self.config.port), SecureRESTHandler, ready_event=self._ready_event)
+                self.server = created_srv
+
+                created_th = threading.Thread(
+                    target=created_srv.run_gated_serving_loop,
+                    kwargs={"poll_interval": 0.1},
+                    daemon=True
+                )
+                self.thread = created_th
+
+                self._stop_event.clear()
+                self._stopping = False
+                self._coordinator_thread = None
+                created_th.start()
+
+                # Ensure server is listening and actively entered the serving loop before reporting success
+                ready = self._ready_event.wait(timeout=2.0)
+                if not ready:
+                    print("REST API indítási hiba: readiness timeout a serve_forever loop indulásakor")
+                    srv = self.server
+                    th = self.thread
+                    self.server = None
+                    self.thread = None
+                    self._stopping = True
+
+                    def _startup_timeout_cleanup(srv_obj: _SyncHTTPServer, th_obj: Optional[threading.Thread], ready_ev: threading.Event):
+                        with srv_obj._start_handshake_lock:
+                            srv_obj._cancel_startup_event.set()
+                            is_active = srv_obj._active_in_serving_loop
+
+                        if is_active:
+                            # Worker thread confirmed active inside serving loop: perform proper shutdown
+                            try:
+                                srv_obj.shutdown()
+                            except Exception as ex:
+                                print(f"Hiba a timeoutolt szerver leállításakor: {ex}")
+                        else:
+                            # Loop never confirmed active: do NOT call shutdown()!
+                            # If worker is between run_gated_serving_loop and serve_forever,
+                            # its first service_actions() will see cancel_startup_event and set __shutdown_request=True.
+                            # Also signal loop shutdown request defensively without blocking:
+                            if hasattr(srv_obj, "request_shutdown"):
+                                srv_obj.request_shutdown()
+
+                        if th_obj and th_obj.is_alive():
+                            try:
+                                th_obj.join(timeout=2.0)
+                            except Exception as ex:
+                                print(f"Hiba a timeoutolt szerver szál bevárásakor: {ex}")
+
+                        try:
+                            srv_obj.server_close()
+                        except Exception as ex:
+                            print(f"Hiba a timeoutolt szerver socket lezárásakor: {ex}")
+
+                        # Only restore stopped state if thread is confirmed dead
+                        if th_obj is None or not th_obj.is_alive():
+                            with self._lock:
+                                self._stopping = False
+                                self._stop_event.set()
+                                self._ready_event.set()
+                        else:
+                            print("Figyelmeztetés: a timeoutolt szerver szál még aktív, leállítás folyamatban marad")
+
+                    coord = threading.Thread(
+                        target=_startup_timeout_cleanup,
+                        args=(srv, th, self._ready_event),
+                        name="RESTStartupTimeoutCleanup",
+                        daemon=True
+                    )
+                    coord.start()
+                    return False
+
+                print(f"REST API indítva: http://{self.config.host}:{self.config.port}")
+                return True
+            except Exception as e:
+                print(f"REST API indítási hiba: {e}")
+                self.server = None
+                self.thread = None
+                self._stopping = False
+                self._ready_event.set()
+                self._stop_event.set()
+
+                if created_srv is not None:
+                    try:
+                        created_srv.server_close()
+                    except Exception:
+                        pass
+
+                if created_th is not None and created_th.is_alive() and threading.current_thread() != created_th:
+                    try:
+                        created_th.join(timeout=1.0)
+                    except Exception:
+                        pass
+
+                return False
     
-    def stop(self):
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
-            self.server = None
-            self.thread = None
-            print("REST API leállítva")
+    def stop(self, timeout: float = 5.0) -> bool:
+        """
+        Leállítja a REST szervert.
+        A timeout az egész leállítási folyamatra vonatkozik, nem blokkolja végtelenül a hívót
+        (pl. GUI szálat), és dedikált koordinátorszálon futtatja a shutdown-t.
+        Visszatér True-val ha a leállítás sikeresen befejeződött a timeouton belül,
+        False-szal ha még folyamatban van.
+        """
+        with self._lock:
+            if not self.server and not self._stopping:
+                return True
+
+            if self._stopping:
+                # Már leállítás alatt van; ne hozzunk létre új koordinátort
+                stop_event = self._stop_event
+                server_thread = self.thread
+            else:
+                server = self.server
+                thread = self.thread
+                self.server = None
+                self.thread = None
+                self._stopping = True
+                self._stop_event.clear()
+                stop_event = self._stop_event
+                server_thread = thread
+
+                ready_ev = self._ready_event
+
+                def _shutdown_coordinator(srv: HTTPServer, th: Optional[threading.Thread]):
+                    try:
+                        # Wait until serving loop has actually started before calling shutdown()
+                        # to prevent BaseServer.shutdown() from deadlocking
+                        ready_ev.wait(timeout=3.0)
+                        srv.shutdown()
+                    except Exception as e:
+                        print(f"Hiba a REST server leállításakor: {e}")
+
+                    if th and th.is_alive():
+                        try:
+                            th.join()
+                        except Exception as e:
+                            print(f"Hiba a REST server szál bevárásakor: {e}")
+
+                    try:
+                        srv.server_close()
+                    except Exception as e:
+                        print(f"Hiba a REST server socket lezárásakor: {e}")
+
+                    with self._lock:
+                        self._stopping = False
+                        self._coordinator_thread = None
+                        self._stop_event.set()
+                    print("REST API leállítva")
+
+                coord = threading.Thread(
+                    target=_shutdown_coordinator,
+                    args=(server, thread),
+                    name="RESTShutdownCoordinator",
+                    daemon=True
+                )
+                self._coordinator_thread = coord
+                coord.start()
+
+        # Ha maga a serving szál hívta a stop()-ot, ne blokkoljuk önmagunkat
+        if server_thread and threading.current_thread() == server_thread:
+            return False
+
+        # Bounded waiting a teljes folyamat befejezésére
+        completed = stop_event.wait(timeout=max(0.0, float(timeout)))
+        if not completed:
+            print(f"Figyelmeztetés: a REST server leállítása nem fejeződött be {timeout}s alatt")
+        return completed
     
     def is_running(self) -> bool:
-        return self.server is not None
+        with self._lock:
+            return self.server is not None or self._stopping or not self._stop_event.is_set()

@@ -4,6 +4,8 @@ import json
 import urllib.request
 import urllib.error
 import http.client
+from http.server import HTTPServer
+from unittest.mock import patch
 import tempfile
 import shutil
 import time
@@ -11,7 +13,8 @@ from pathlib import Path
 
 from core.plugin_system import PluginLoader
 from core.engine import Engine
-from core.rest_api import SecureRESTAPIServer, RESTConfig, _run_in_sandbox_process, hash_api_key
+import threading
+from core.rest_api import SecureRESTAPIServer, SecureRESTHandler, RESTConfig, _run_in_sandbox_process, hash_api_key, RateLimiter
 from core.version import REST_API_VERSION, API_MANAGER_VERSION, MAIN_VERSION
 from datetime import datetime, timedelta
 
@@ -1808,6 +1811,798 @@ class TestBiztPR1SecurityHardening(unittest.TestCase):
         s8, r8 = self._make_request("/api/v2/keys", method="POST", body={"name": "r8", "rate_limit": 10000}, headers={"X-API-Key": self.admin_key})
         self.assertEqual(s8, 201)
         self.assertEqual(r8["key_info"]["rate_limit_per_min"], 10000)
+
+class TestRateLimiter(unittest.TestCase):
+    """P2-02: RateLimiter memory cleanup, concurrency, and sliding window tests."""
+
+    def test_normal_rate_limit_behavior(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        # Allow up to 3 requests
+        self.assertTrue(limiter.is_allowed("user1", 3))
+        self.assertTrue(limiter.is_allowed("user1", 3))
+        self.assertTrue(limiter.is_allowed("user1", 3))
+        # 4th request within the same minute is denied
+        self.assertFalse(limiter.is_allowed("user1", 3))
+
+    def test_expiration_of_old_timestamps(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        self.assertTrue(limiter.is_allowed("user1", 2))
+        self.assertTrue(limiter.is_allowed("user1", 2))
+        self.assertFalse(limiter.is_allowed("user1", 2))
+
+        # Advance time by 60 seconds (window expires)
+        curr_time += 60.0
+        self.assertTrue(limiter.is_allowed("user1", 2))
+        self.assertEqual(len(limiter.requests["user1"]), 1)
+
+    def test_removal_of_empty_identifiers_on_request(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        limiter.is_allowed("user1", 5)
+        self.assertIn("user1", limiter.requests)
+
+        # Advance time past 60s
+        curr_time += 61.0
+        # If user1 makes a request, old timestamps are pruned and new one is added
+        limiter.is_allowed("user1", 5)
+        self.assertEqual(len(limiter.requests["user1"]), 1)
+
+    def test_opportunistic_cleanup_of_inactive_identifiers(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        # Single request from client_idle
+        limiter.is_allowed("client_idle", 10)
+        self.assertIn("client_idle", limiter.requests)
+
+        # Advance time by 65s (exceeding 60s sliding window and cleanup_interval_sec)
+        curr_time += 65.0
+
+        # An unrelated request comes in from active_client
+        limiter.is_allowed("active_client", 10)
+
+        # client_idle must have been opportunistically purged without explicit cleanup_expired call
+        self.assertNotIn("client_idle", limiter.requests)
+        self.assertIn("active_client", limiter.requests)
+
+    def test_explicit_cleanup_expired(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        limiter.is_allowed("user1", 5)
+        limiter.is_allowed("user2", 5)
+        self.assertEqual(len(limiter.requests), 2)
+
+        # Advance by 30 seconds - user2 makes another request
+        curr_time += 30.0
+        limiter.is_allowed("user2", 5)
+
+        # Advance time so user1's timestamps expire (>60s from 1000.0) but user2 has one active
+        curr_time += 35.0  # now 1065.0: user1 was at 1000 (diff 65), user2 had one at 1000 and one at 1030 (diff 35)
+        removed = limiter.cleanup_expired()
+        self.assertEqual(removed, 1)
+        self.assertNotIn("user1", limiter.requests)
+        self.assertIn("user2", limiter.requests)
+        self.assertEqual(len(limiter.requests["user2"]), 1)
+
+        # Advance time so user2 expires too
+        curr_time += 30.0  # now 1095.0: diff from 1030 is 65
+        removed = limiter.cleanup_expired()
+        self.assertEqual(removed, 1)
+        self.assertNotIn("user2", limiter.requests)
+        self.assertEqual(len(limiter.requests), 0)
+
+    def test_multiple_identifiers_independent(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        # user1 reaches limit
+        self.assertTrue(limiter.is_allowed("user1", 1))
+        self.assertFalse(limiter.is_allowed("user1", 1))
+
+        # user2 is not blocked
+        self.assertTrue(limiter.is_allowed("user2", 1))
+        self.assertFalse(limiter.is_allowed("user2", 1))
+
+    def test_cleanup_does_not_incorrectly_allow_above_limit(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        for _ in range(5):
+            self.assertTrue(limiter.is_allowed("client_x", 5))
+        self.assertFalse(limiter.is_allowed("client_x", 5))
+
+        # Partial expiration
+        curr_time += 30.0  # only 30s elapsed, none expired
+        self.assertFalse(limiter.is_allowed("client_x", 5))
+        self.assertEqual(len(limiter.requests["client_x"]), 5)
+
+    def test_concurrent_access(self):
+        limiter = RateLimiter()
+        num_threads = 10
+        requests_per_thread = 50
+        errors = []
+
+        def worker(client_id):
+            try:
+                for _ in range(requests_per_thread):
+                    limiter.is_allowed(client_id, 1000)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(f"thread_{i % 3}",)) for i in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(errors), 0)
+        # Sum of request counts across the 3 distinct IDs must equal total requests
+        total = sum(len(ts) for ts in limiter.requests.values())
+        self.assertEqual(total, num_threads * requests_per_thread)
+
+    def test_concurrent_rate_limit_enforcement_with_barrier(self):
+        """P2-02: Deterministic test that rate limit is strictly enforced under high contention."""
+        limiter = RateLimiter()
+        limit = 5
+        num_threads = 20
+        barrier = threading.Barrier(num_threads)
+        results = []
+        lock = threading.Lock()
+
+        def worker():
+            barrier.wait()  # synchronize all threads to start simultaneously
+            allowed = limiter.is_allowed("contended_client", limit)
+            with lock:
+                results.append(allowed)
+
+        threads = [threading.Thread(target=worker) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        accepted = sum(1 for r in results if r is True)
+        rejected = sum(1 for r in results if r is False)
+
+        self.assertEqual(accepted, limit)
+        self.assertEqual(rejected, num_threads - limit)
+        self.assertEqual(len(limiter.requests["contended_client"]), limit)
+
+class TestServerLifecycle(unittest.TestCase):
+    """P2-03: REST server lifecycle, stop idempotency, socket release, and thread cleanup."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.config_path = Path(self.tmp_dir) / "rest_config.json"
+        self.keys_path = Path(self.tmp_dir) / "api_keys.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_stop_when_never_started(self):
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        self.assertFalse(server.is_running())
+        # Must be safe and not throw
+        server.stop()
+        self.assertFalse(server.is_running())
+
+    def test_start_stop_lifecycle_and_thread_termination(self):
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        started = server.start()
+        self.assertTrue(started)
+        self.assertTrue(server.is_running())
+        self.assertIsNotNone(server.thread)
+        self.assertTrue(server.thread.is_alive())
+
+        serving_th = server.thread
+        server.stop()
+
+        self.assertFalse(server.is_running())
+        self.assertIsNone(server.server)
+        self.assertIsNone(server.thread)
+        self.assertFalse(serving_th.is_alive())
+
+    def test_repeated_stop_calls_idempotent(self):
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        server.start()
+        self.assertTrue(server.is_running())
+
+        server.stop()
+        self.assertFalse(server.is_running())
+        # Call stop again repeatedly
+        server.stop()
+        server.stop()
+        self.assertFalse(server.is_running())
+
+    def test_restarting_after_stop_releases_socket(self):
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        # Start and stop first time
+        self.assertTrue(server.start())
+        server.stop()
+
+        # Start second time on identical port - socket must have been released
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop()
+        self.assertFalse(server.is_running())
+
+    def test_stop_invoked_from_serving_thread(self):
+        """P2-03: Real regression test verifying stop() invoked from the actual serving thread."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        # Custom handler subclass to trigger stop from within the serving thread during a request
+        stop_called = threading.Event()
+        caller_is_serving_thread = [False]
+
+        class SelfStoppingHandler(SecureRESTHandler):
+            def do_GET(self):
+                caller_is_serving_thread[0] = (threading.current_thread() == server.thread)
+                # Call stop() directly on server from the serving thread
+                server.stop()
+                stop_called.set()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+        # Temporarily use SelfStoppingHandler
+        orig_start = server.start
+        def custom_start():
+            from core.rest_api import _SyncHTTPServer
+            with server._lock:
+                if server.server or server._stopping:
+                    return False
+                server._ready_event.clear()
+                server.server = _SyncHTTPServer((server.config.host, server.config.port), SelfStoppingHandler, ready_event=server._ready_event)
+                server.thread = threading.Thread(target=server.server.serve_forever, daemon=True)
+                server._stop_event.clear()
+                server._stopping = False
+                server.thread.start()
+                server._ready_event.wait(timeout=2.0)
+                return True
+
+        self.assertTrue(custom_start())
+        serving_thread = server.thread
+        self.assertTrue(server.is_running())
+
+        # Trigger request from client thread
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", 8899, timeout=3)
+            conn.request("GET", "/")
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+        except Exception:
+            pass
+
+        # Verify stop was initiated by serving thread
+        self.assertTrue(stop_called.wait(timeout=3.0))
+        self.assertTrue(caller_is_serving_thread[0])
+
+        # Verify serving thread terminated and stop event completed without deadlocking
+        serving_thread.join(timeout=3.0)
+        self.assertFalse(serving_thread.is_alive())
+        self.assertTrue(server._stop_event.wait(timeout=3.0))
+
+        # Verify listening socket was freed: can start a new SecureRESTAPIServer or bind socket with SO_REUSEADDR
+        import socket
+        test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            test_sock.bind(("127.0.0.1", 8899))
+            bound = True
+        except OSError:
+            bound = False
+        finally:
+            test_sock.close()
+        self.assertTrue(bound, "Port 8899 was not released after serving-thread shutdown")
+
+    def test_stop_with_blocked_request_handler_times_out_and_completes_later(self):
+        """P2-03: stop(timeout) returns within timeout when handler is blocked, and cleans up when released."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        handler_entered = threading.Event()
+        release_handler = threading.Event()
+
+        class BlockingHandler(SecureRESTHandler):
+            def do_GET(self):
+                handler_entered.set()
+                release_handler.wait(timeout=5.0)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"unblocked")
+
+        with server._lock:
+            from core.rest_api import _SyncHTTPServer
+            server._ready_event.clear()
+            server.server = _SyncHTTPServer((server.config.host, server.config.port), BlockingHandler, ready_event=server._ready_event)
+            server.thread = threading.Thread(target=server.server.serve_forever, daemon=True)
+            server._stop_event.clear()
+            server._stopping = False
+            server.thread.start()
+            server._ready_event.wait(timeout=2.0)
+
+        serving_th = server.thread
+
+        # Start a client request in a background thread to block inside BlockingHandler
+        def client_req():
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", 8899, timeout=5)
+                conn.request("GET", "/")
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+            except Exception:
+                pass
+
+        client_th = threading.Thread(target=client_req, daemon=True)
+        client_th.start()
+
+        # Wait until handler is actively blocked
+        self.assertTrue(handler_entered.wait(timeout=3.0))
+
+        # Call stop with short timeout (0.2s)
+        t0 = time.time()
+        completed = server.stop(timeout=0.2)
+        elapsed = time.time() - t0
+
+        # stop() must have returned within bounded time (~0.2s, definitely < 1.0s)
+        self.assertLess(elapsed, 1.0)
+        self.assertFalse(completed)
+
+        # Server must not report itself fully stopped while handler is blocked
+        self.assertTrue(server.is_running())
+        self.assertTrue(serving_th.is_alive())
+
+        # Calling start() while server is still shutting down must be rejected
+        self.assertFalse(server.start())
+
+        # Calling repeated stop() must be idempotent and not create duplicate coordinators
+        coord_before = server._coordinator_thread
+        server.stop(timeout=0.1)
+        self.assertIs(server._coordinator_thread, coord_before)
+
+        # Now release the blocked handler
+        release_handler.set()
+        client_th.join(timeout=2.0)
+
+        # Wait for shutdown coordinator to finish
+        self.assertTrue(server._stop_event.wait(timeout=3.0))
+        serving_th.join(timeout=3.0)
+        self.assertFalse(serving_th.is_alive())
+        self.assertFalse(server.is_running())
+
+        # Now starting a new server on identical port must succeed
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=1.0)
+        self.assertFalse(server.is_running())
+
+    def test_immediate_start_stop_race_repeated(self):
+        """P2-03: Repeated immediate start() and stop() without race condition or deadlock."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        for i in range(5):
+            started = server.start()
+            self.assertTrue(started, f"Failed to start on iteration {i}")
+            serving_thread = server.thread
+            stopped = server.stop(timeout=3.0)
+            self.assertTrue(stopped, f"Stop timed out on iteration {i}")
+            self.assertFalse(server.is_running())
+            serving_thread.join(timeout=2.0)
+            self.assertFalse(serving_thread.is_alive())
+
+        # Verify socket released: start final time and stop cleanly
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=2.0)
+        self.assertFalse(server.is_running())
+
+    def test_readiness_signalled_inside_active_loop(self):
+        """P2-03: Verify that readiness event is not signalled before BaseServer.serve_forever loop initializes."""
+        from core.rest_api import _SyncHTTPServer
+        ready_ev = threading.Event()
+        shutdown_cleared_before_ready = [False]
+
+        class TrackingSyncServer(_SyncHTTPServer):
+            def service_actions(self):
+                # Access private __is_shut_down via name mangling to verify it was cleared
+                shut_down_event = getattr(self, "_BaseServer__is_shut_down", None)
+                if shut_down_event is not None and not shut_down_event.is_set():
+                    shutdown_cleared_before_ready[0] = True
+                super().service_actions()
+
+        server = TrackingSyncServer(("127.0.0.1", 8899), SecureRESTHandler, ready_event=ready_ev)
+        t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        t.start()
+
+        self.assertTrue(ready_ev.wait(timeout=2.0))
+        self.assertTrue(shutdown_cleared_before_ready[0])
+
+        server.shutdown()
+        t.join(timeout=2.0)
+        server.server_close()
+
+    def test_start_readiness_timeout_handled_cleanly(self):
+        """P2-03: When start() fails to achieve readiness within timeout, returns False without leaking thread or socket."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        # Patch _ready_event.wait in start to simulate timeout
+        with patch.object(server._ready_event, "wait", return_value=False):
+            started = server.start()
+            self.assertFalse(started)
+            # While cleanup is pending, server must report itself as not fully stopped
+            self.assertTrue(server.is_running())
+            # Second start() while cleanup pending must be rejected
+            self.assertFalse(server.start())
+
+        # Wait for background cleanup to finish
+        self.assertTrue(server._stop_event.wait(timeout=3.0))
+        self.assertFalse(server.is_running())
+
+        # Verify listening socket and thread were cleaned up by starting normally on the same port
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=2.0)
+        self.assertFalse(server.is_running())
+
+    def test_start_thread_exception_cleans_up_socket(self):
+        """P2-03: When thread.start() raises an exception, the listening socket is closed without leaking."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        with patch("threading.Thread.start", side_effect=RuntimeError("Simulated thread start failure")):
+            started = server.start()
+            self.assertFalse(started)
+            self.assertFalse(server.is_running())
+
+        # Socket must have been closed, so we can start normally on the same port
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=2.0)
+        self.assertFalse(server.is_running())
+
+    def test_startup_timeout_when_loop_never_initializes_does_not_call_shutdown(self):
+        """P2-03: When serve_forever loop never initializes, shutdown() is not called and coordinator does not hang."""
+        from core.rest_api import _SyncHTTPServer
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        shutdown_called = [False]
+        orig_shutdown = _SyncHTTPServer.shutdown
+
+        def spy_shutdown(srv_self):
+            shutdown_called[0] = True
+            orig_shutdown(srv_self)
+
+        # Mock target so serve_forever never runs at all (thread just sleeps briefly or does dummy wait)
+        dummy_thread_event = threading.Event()
+        def dummy_thread_target(*args, **kwargs):
+            dummy_thread_event.wait(timeout=1.0)
+
+        real_thread_cls = threading.Thread
+        def mock_thread(*args, **kwargs):
+            # Only intercept the server worker thread created with poll_interval kwargs
+            if "kwargs" in kwargs and "poll_interval" in kwargs["kwargs"]:
+                return real_thread_cls(target=dummy_thread_target, daemon=True)
+            return real_thread_cls(*args, **kwargs)
+
+        with patch.object(_SyncHTTPServer, "shutdown", spy_shutdown), \
+             patch("threading.Thread", side_effect=mock_thread):
+            started = server.start()
+            self.assertFalse(started)
+            self.assertTrue(server.is_running())
+
+        # Release dummy thread
+        dummy_thread_event.set()
+
+        # Wait for cleanup to finish
+        self.assertTrue(server._stop_event.wait(timeout=3.0))
+        self.assertFalse(server.is_running())
+
+        # BaseServer.shutdown() must NEVER have been called because readiness was never confirmed
+        self.assertFalse(shutdown_called[0], "shutdown() should not be called when loop never initialized")
+
+        # Port must be free and reusable
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=2.0)
+        self.assertFalse(server.is_running())
+
+    def test_startup_cancellation_handshake_prevents_late_worker_loop_entry(self):
+        """P2-03: When startup times out before worker enters loop, cancel handshake ensures loop is NEVER entered."""
+        from core.rest_api import _SyncHTTPServer
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        worker_paused_before_loop = threading.Event()
+        release_worker_to_proceed = threading.Event()
+        serve_forever_entered = [False]
+
+        orig_serve_forever = _SyncHTTPServer.serve_forever
+
+        def spy_serve_forever(srv_self, *args, **kwargs):
+            serve_forever_entered[0] = True
+            return orig_serve_forever(srv_self, *args, **kwargs)
+
+        orig_run_gated = _SyncHTTPServer.run_gated_serving_loop
+
+        def gated_with_pause(srv_self, *args, **kwargs):
+            # Pause before acquiring gate lock or entering loop
+            worker_paused_before_loop.set()
+            release_worker_to_proceed.wait(timeout=5.0)
+            return orig_run_gated(srv_self, *args, **kwargs)
+
+        with patch.object(_SyncHTTPServer, "serve_forever", spy_serve_forever), \
+             patch.object(_SyncHTTPServer, "run_gated_serving_loop", gated_with_pause):
+            # start() will wait for ready_event, which won't be set because worker is paused
+            # Use small timeout patch for test speed
+            with patch.object(server._ready_event, "wait", return_value=False):
+                started = server.start()
+                self.assertFalse(started)
+                # Cleanup is now active, server reports stopping
+                self.assertTrue(server.is_running())
+
+            # Now release the worker thread to proceed
+            self.assertTrue(worker_paused_before_loop.is_set())
+            release_worker_to_proceed.set()
+
+            # Wait for cleanup to finish
+            self.assertTrue(server._stop_event.wait(timeout=3.0))
+            self.assertFalse(server.is_running())
+
+            # Verify worker thread was cancelled by handshake and NEVER entered serve_forever()
+            self.assertFalse(serve_forever_entered[0], "Worker entered serve_forever despite cancellation")
+
+            # Verify socket released and clean restart succeeds
+            self.assertTrue(server.start())
+            self.assertTrue(server.is_running())
+            server.stop(timeout=2.0)
+            self.assertFalse(server.is_running())
+
+    def test_cancellation_at_exact_post_check_pre_entry_boundary(self):
+        """P2-03: When worker passes cancellation check and releases lock but is cancelled immediately before serve_forever."""
+        from core.rest_api import _SyncHTTPServer
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        worker_at_boundary = threading.Event()
+        release_worker_to_enter_loop = threading.Event()
+        shutdown_called = [False]
+        orig_shutdown = _SyncHTTPServer.shutdown
+
+        def spy_shutdown(srv_self):
+            shutdown_called[0] = True
+            orig_shutdown(srv_self)
+
+        def pause_at_post_gate_boundary(srv_self):
+            # EXACT BOUNDARY: Executed by real production run_gated_serving_loop()
+            # after cancellation check and lock release, but immediately before serve_forever()
+            worker_at_boundary.set()
+            release_worker_to_enter_loop.wait(timeout=5.0)
+
+        with patch.object(_SyncHTTPServer, "shutdown", spy_shutdown), \
+             patch.object(_SyncHTTPServer, "_on_post_gate_before_serve", pause_at_post_gate_boundary):
+            with patch.object(server._ready_event, "wait", return_value=False):
+                started = server.start()
+                self.assertFalse(started)
+                # Cleanup is now active, server reports stopping
+                self.assertTrue(server.is_running())
+
+            # Worker paused at the exact boundary
+            self.assertTrue(worker_at_boundary.wait(timeout=3.0))
+
+            # BaseServer.shutdown() must NOT have been called while worker is paused at boundary
+            self.assertFalse(shutdown_called[0], "shutdown() must not be called based on pre-entry assumption")
+
+            # Release worker so it proceeds into serve_forever
+            release_worker_to_enter_loop.set()
+
+            # Wait for cleanup coordinator to finish
+            self.assertTrue(server._stop_event.wait(timeout=3.0))
+            self.assertFalse(server.is_running())
+
+            # Verify that shutdown() was still never called (because service_actions aborted on cancel)
+            self.assertFalse(shutdown_called[0], "shutdown() should not be called when loop aborted via cancellation")
+
+            # Verify listening socket was freed and restart succeeds
+            self.assertTrue(server.start())
+            self.assertTrue(server.is_running())
+            server.stop(timeout=2.0)
+            self.assertFalse(server.is_running())
+
+class TestContentLengthHandling(unittest.TestCase):
+    """P2-04: Malformed, non-numeric, negative, duplicate, or oversized Content-Length tests."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.plugin_loader = PluginLoader()
+        cls.plugin_loader.load_all()
+        cls.engine = Engine()
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.config_path = Path(self.tmp_dir) / "rest_config.json"
+        self.keys_path = Path(self.tmp_dir) / "api_keys.json"
+
+        self.server = SecureRESTAPIServer(
+            config_path=self.config_path,
+            keys_path=self.keys_path,
+            plugin_loader=self.plugin_loader,
+            engine=self.engine
+        )
+        self.server.config.enabled = True
+        self.server.config.host = "127.0.0.1"
+        self.server.config.port = 8898
+        self.server.config.require_api_key = True
+        self.server.config.enable_execute_endpoints = True
+        self.server.config.enable_admin_endpoints = True
+        self.server.config.max_request_size_kb = 10  # 10 KB limit
+
+        self.admin_key = self.server.create_key("admin", permissions=["read", "write", "execute", "admin"])
+        self.server.start()
+
+    def tearDown(self):
+        self.server.stop()
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def _raw_post(self, raw_headers: dict, raw_body_bytes: bytes) -> tuple[int, dict]:
+        """Send low-level HTTP request with explicit headers using http.client to allow custom/malformed headers."""
+        conn = http.client.HTTPConnection("127.0.0.1", 8898, timeout=5)
+        headers = {
+            "X-API-Key": self.admin_key,
+            "Content-Type": "application/json",
+        }
+        headers.update(raw_headers)
+        conn.request("POST", "/api/v2/keys", body=raw_body_bytes, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        data = resp.read()
+        conn.close()
+        try:
+            parsed = json.loads(data.decode("utf-8"))
+        except Exception:
+            parsed = {}
+        return status, parsed
+
+    def test_valid_content_length(self):
+        body = json.dumps({"name": "valid_key", "permissions": ["read"]}).encode("utf-8")
+        status, data = self._raw_post({"Content-Length": str(len(body))}, body)
+        self.assertEqual(status, 201)
+        self.assertIn("api_key", data)
+
+    def test_content_length_with_leading_zeros_accepted(self):
+        """P2-04: Valid Content-Length with many leading zeros must be accepted and not treated as oversized."""
+        body = json.dumps({"name": "leading_zeros_key", "permissions": ["read"]}).encode("utf-8")
+        # Prepend 25 leading zeros to the actual length
+        cl_str = "0000000000000000000000000" + str(len(body))
+        status, data = self._raw_post({"Content-Length": cl_str}, body)
+        self.assertEqual(status, 201)
+        self.assertIn("api_key", data)
+
+    def test_missing_content_length_handled(self):
+        # Empty body with missing content-length
+        conn = http.client.HTTPConnection("127.0.0.1", 8898, timeout=5)
+        # Note: http.client adds Content-Length automatically if body is bytes, so we send without body
+        conn.putrequest("POST", "/api/v2/keys")
+        conn.putheader("X-API-Key", self.admin_key)
+        conn.putheader("Content-Type", "application/json")
+        conn.endheaders()
+        resp = conn.getresponse()
+        # When body is empty, json parse produces empty dict -> name validation defaults to unnamed, succeeds with 201
+        self.assertEqual(resp.status, 201)
+        conn.close()
+
+    def test_non_numeric_content_length(self):
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": "not-a-number"}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_unicode_digit_content_length(self):
+        """P2-04: Unicode digits (such as ², ³, etc.) must be rejected with HTTP 400."""
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": "²"}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_extremely_long_digit_sequence_content_length(self):
+        """P2-04: Extremely long digit sequence must be rejected with HTTP 413 without crashing or reading unbounded body."""
+        body = b'{"name": "test"}'
+        huge_cl = "9" * 100
+        status, data = self._raw_post({"Content-Length": huge_cl}, body)
+        self.assertEqual(status, 413)
+        self.assertIn("Túl nagy kérés", data.get("error", ""))
+
+    def test_negative_content_length(self):
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": "-50"}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_empty_content_length(self):
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": ""}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_whitespace_content_length(self):
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": "   "}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_duplicate_ambiguous_content_length(self):
+        conn = http.client.HTTPConnection("127.0.0.1", 8898, timeout=5)
+        conn.putrequest("POST", "/api/v2/keys")
+        conn.putheader("X-API-Key", self.admin_key)
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", "20")
+        conn.putheader("Content-Length", "25")
+        conn.endheaders(b'{"name": "test_dup"}')
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+
+        self.assertEqual(resp.status, 400)
+        self.assertIn("Többszörös vagy kétértelmű Content-Length", data.get("error", ""))
+
+    def test_request_body_exceeding_max_request_size(self):
+        # max_request_size_kb is 10 (10240 bytes)
+        oversized = 11 * 1024
+        body = b"x" * oversized
+        status, data = self._raw_post({"Content-Length": str(oversized)}, body)
+        self.assertEqual(status, 413)
+        self.assertIn("Túl nagy kérés", data.get("error", ""))
+
+    def test_server_remains_operational_after_malformed_requests(self):
+        # Send bad requests
+        self._raw_post({"Content-Length": "xyz"}, b"bad")
+        self._raw_post({"Content-Length": "-1"}, b"bad")
+        self._raw_post({"Content-Length": ""}, b"bad")
+
+        # Now send a valid request - server must remain operational
+        body = json.dumps({"name": "healthy_key", "permissions": ["read"]}).encode("utf-8")
+        status, data = self._raw_post({"Content-Length": str(len(body))}, body)
+        self.assertEqual(status, 201)
+        self.assertIn("api_key", data)
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,24 @@
 All notable changes to CodeLab HU are documented in this file.
 The project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.8.2] - 2026-11-01
+
+### Reliability & Server Lifecycle (Bizt-PR#2 — REST API Reliability & Lifecycle)
+- **RateLimiter Memory Cleanup & Synchronization (P2-02)**:
+  - Added thread synchronization (`threading.Lock`) to `RateLimiter` in `core/rest_api.py` for safe concurrent request processing across server threads.
+  - Implemented automatic identifier pruning: client identifiers whose sliding-window request timestamps have expired are removed from memory, avoiding unbounded memory growth.
+  - Added an injectable clock (`time_func`) for deterministic testing without fragile sleeps or race conditions.
+  - Maintained exact sliding-window allow/deny semantics at configured rate limits.
+- **REST Server Lifecycle & GUI Shutdown (P2-03)**:
+  - Updated `MainWindow.closeEvent()` in `ui/main_window.py` to ensure clean shutdown of the embedded REST server upon closing the main window without blocking or aborting application shutdown.
+  - Updated `SecureRESTAPIServer.stop()` to be thread-safe, idempotent, and bounded with thread join timeouts, preventing deadlocks when invoked from the serving thread and reliably releasing sockets and terminating daemon threads.
+- **Strict Content-Length Validation (P2-04)**:
+  - Added strict validation for incoming HTTP `Content-Length` headers in `SecureRESTHandler.do_POST`.
+  - Rejects duplicate, ambiguous, non-numeric, negative, or empty `Content-Length` headers with HTTP 400 Bad Request, preventing unhandled exceptions and server instability.
+  - Retained HTTP 413 payload size enforcement for oversized requests.
+- **Version Updates**:
+  - Bumped `MAIN_VERSION` to `3.8.2` and `REST_API_VERSION` to `1.0.2`.
+
 ## [3.8.1] - 2026-10-31
 
 ### Security & Hardening (Bizt-PR#1 — REST API Key & IP Security Hardening)

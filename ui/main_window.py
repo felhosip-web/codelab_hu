@@ -655,6 +655,14 @@ class MainWindow(QMainWindow):
             self.workspace_config.save()
         except Exception as e:
             print(f"[MainWindow] Config mentési hiba bezáráskor: {e}")
+
+        # P2-03: REST szerver leállítása ablak bezárásakor
+        try:
+            if hasattr(self, 'rest_server') and self.rest_server:
+                self.rest_server.stop(timeout=2.0)
+        except Exception as e:
+            print(f"[MainWindow] REST szerver leállítási hiba bezáráskor: {e}")
+
         super().closeEvent(event)
 
     def on_reload_plugins(self):
