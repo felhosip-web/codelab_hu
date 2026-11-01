@@ -1007,6 +1007,7 @@ class SecureRESTAPIServer:
         self.api_keys: Dict[str, APIKey] = {}
         self.server: Optional[HTTPServer] = None
         self.thread: Optional[threading.Thread] = None
+        self._coordinator_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._stopping: bool = False
         self._stop_event = threading.Event()
@@ -1155,7 +1156,7 @@ class SecureRESTAPIServer:
     
     def start(self):
         with self._lock:
-            if self.server or self._stopping:
+            if self.server or self._stopping or not self._stop_event.is_set():
                 return False
 
             if not self.config.enabled:
@@ -1174,6 +1175,7 @@ class SecureRESTAPIServer:
                 self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
                 self._stop_event.clear()
                 self._stopping = False
+                self._coordinator_thread = None
                 self.thread.start()
                 print(f"REST API indítva: http://{self.config.host}:{self.config.port}")
                 return True
@@ -1185,50 +1187,74 @@ class SecureRESTAPIServer:
                 self._stop_event.set()
                 return False
     
-    def stop(self, timeout: float = 5.0):
+    def stop(self, timeout: float = 5.0) -> bool:
+        """
+        Leállítja a REST szervert.
+        A timeout az egész leállítási folyamatra vonatkozik, nem blokkolja végtelenül a hívót
+        (pl. GUI szálat), és dedikált koordinátorszálon futtatja a shutdown-t.
+        Visszatér True-val ha a leállítás sikeresen befejeződött a timeouton belül,
+        False-szal ha még folyamatban van.
+        """
         with self._lock:
-            if not self.server:
-                return
-            server = self.server
-            thread = self.thread
-            self.server = None
-            self.thread = None
-            self._stopping = True
+            if not self.server and not self._stopping:
+                return True
 
-        def _do_shutdown_and_close(srv: HTTPServer, th: Optional[threading.Thread], join_timeout: float):
-            try:
-                srv.shutdown()
-            except Exception as e:
-                print(f"Hiba a REST server leállításakor: {e}")
+            if self._stopping:
+                # Már leállítás alatt van; ne hozzunk létre új koordinátort
+                stop_event = self._stop_event
+                server_thread = self.thread
+            else:
+                server = self.server
+                thread = self.thread
+                self.server = None
+                self.thread = None
+                self._stopping = True
+                self._stop_event.clear()
+                stop_event = self._stop_event
+                server_thread = thread
 
-            if th and th.is_alive() and threading.current_thread() != th:
-                th.join(timeout=join_timeout)
-                if th.is_alive():
-                    print(f"Figyelmeztetés: a REST server szál nem állt le {join_timeout}s alatt")
+                def _shutdown_coordinator(srv: HTTPServer, th: Optional[threading.Thread]):
+                    try:
+                        srv.shutdown()
+                    except Exception as e:
+                        print(f"Hiba a REST server leállításakor: {e}")
 
-            try:
-                srv.server_close()
-            except Exception as e:
-                print(f"Hiba a REST server socket lezárásakor: {e}")
+                    if th and th.is_alive():
+                        try:
+                            th.join()
+                        except Exception as e:
+                            print(f"Hiba a REST server szál bevárásakor: {e}")
 
-            with self._lock:
-                self._stopping = False
-                self._stop_event.set()
-            print("REST API leállítva")
+                    try:
+                        srv.server_close()
+                    except Exception as e:
+                        print(f"Hiba a REST server socket lezárásakor: {e}")
 
-        current_th = threading.current_thread()
-        if thread and current_th == thread:
-            # Called directly from serving thread: avoid deadlock by delegating shutdown to a background thread
-            bg_th = threading.Thread(
-                target=_do_shutdown_and_close,
-                args=(server, thread, timeout),
-                daemon=True
-            )
-            bg_th.start()
-            return
+                    with self._lock:
+                        self._stopping = False
+                        self._coordinator_thread = None
+                        self._stop_event.set()
+                    print("REST API leállítva")
 
-        _do_shutdown_and_close(server, thread, timeout)
+                coord = threading.Thread(
+                    target=_shutdown_coordinator,
+                    args=(server, thread),
+                    name="RESTShutdownCoordinator",
+                    daemon=True
+                )
+                self._coordinator_thread = coord
+                coord.start()
+
+        # Ha maga a serving szál hívta a stop()-ot, ne blokkoljuk önmagunkat
+        if server_thread and threading.current_thread() == server_thread:
+            return False
+
+        # Bounded waiting a teljes folyamat befejezésére
+        completed = stop_event.wait(timeout=max(0.0, float(timeout)))
+        if not completed:
+            print(f"Figyelmeztetés: a REST server leállítása nem fejeződött be {timeout}s alatt")
+        return completed
     
     def is_running(self) -> bool:
         with self._lock:
-            return self.server is not None and not self._stopping
+            return self.server is not None or self._stopping or not self._stop_event.is_set()

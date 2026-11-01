@@ -2113,6 +2113,87 @@ class TestServerLifecycle(unittest.TestCase):
             test_sock.close()
         self.assertTrue(bound, "Port 8899 was not released after serving-thread shutdown")
 
+    def test_stop_with_blocked_request_handler_times_out_and_completes_later(self):
+        """P2-03: stop(timeout) returns within timeout when handler is blocked, and cleans up when released."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        handler_entered = threading.Event()
+        release_handler = threading.Event()
+
+        class BlockingHandler(SecureRESTHandler):
+            def do_GET(self):
+                handler_entered.set()
+                release_handler.wait(timeout=5.0)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"unblocked")
+
+        with server._lock:
+            server.server = HTTPServer((server.config.host, server.config.port), BlockingHandler)
+            server.thread = threading.Thread(target=server.server.serve_forever, daemon=True)
+            server._stop_event.clear()
+            server._stopping = False
+            server.thread.start()
+
+        serving_th = server.thread
+
+        # Start a client request in a background thread to block inside BlockingHandler
+        def client_req():
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", 8899, timeout=5)
+                conn.request("GET", "/")
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+            except Exception:
+                pass
+
+        client_th = threading.Thread(target=client_req, daemon=True)
+        client_th.start()
+
+        # Wait until handler is actively blocked
+        self.assertTrue(handler_entered.wait(timeout=3.0))
+
+        # Call stop with short timeout (0.2s)
+        t0 = time.time()
+        completed = server.stop(timeout=0.2)
+        elapsed = time.time() - t0
+
+        # stop() must have returned within bounded time (~0.2s, definitely < 1.0s)
+        self.assertLess(elapsed, 1.0)
+        self.assertFalse(completed)
+
+        # Server must not report itself fully stopped while handler is blocked
+        self.assertTrue(server.is_running())
+        self.assertTrue(serving_th.is_alive())
+
+        # Calling start() while server is still shutting down must be rejected
+        self.assertFalse(server.start())
+
+        # Calling repeated stop() must be idempotent and not create duplicate coordinators
+        coord_before = server._coordinator_thread
+        server.stop(timeout=0.1)
+        self.assertIs(server._coordinator_thread, coord_before)
+
+        # Now release the blocked handler
+        release_handler.set()
+        client_th.join(timeout=2.0)
+
+        # Wait for shutdown coordinator to finish
+        self.assertTrue(server._stop_event.wait(timeout=3.0))
+        serving_th.join(timeout=3.0)
+        self.assertFalse(serving_th.is_alive())
+        self.assertFalse(server.is_running())
+
+        # Now starting a new server on identical port must succeed
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=1.0)
+        self.assertFalse(server.is_running())
+
 class TestContentLengthHandling(unittest.TestCase):
     """P2-04: Malformed, non-numeric, negative, duplicate, or oversized Content-Length tests."""
 
