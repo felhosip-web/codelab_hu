@@ -2260,9 +2260,34 @@ class TestServerLifecycle(unittest.TestCase):
         with patch.object(server._ready_event, "wait", return_value=False):
             started = server.start()
             self.assertFalse(started)
-            self.assertFalse(server.is_running())
+            # While cleanup is pending, server must report itself as not fully stopped
+            self.assertTrue(server.is_running())
+            # Second start() while cleanup pending must be rejected
+            self.assertFalse(server.start())
+
+        # Wait for background cleanup to finish
+        self.assertTrue(server._stop_event.wait(timeout=3.0))
+        self.assertFalse(server.is_running())
 
         # Verify listening socket and thread were cleaned up by starting normally on the same port
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=2.0)
+        self.assertFalse(server.is_running())
+
+    def test_start_thread_exception_cleans_up_socket(self):
+        """P2-03: When thread.start() raises an exception, the listening socket is closed without leaking."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        with patch("threading.Thread.start", side_effect=RuntimeError("Simulated thread start failure")):
+            started = server.start()
+            self.assertFalse(started)
+            self.assertFalse(server.is_running())
+
+        # Socket must have been closed, so we can start normally on the same port
         self.assertTrue(server.start())
         self.assertTrue(server.is_running())
         server.stop(timeout=2.0)

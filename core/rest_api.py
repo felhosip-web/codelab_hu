@@ -1184,19 +1184,24 @@ class SecureRESTAPIServer:
             SecureRESTHandler.plugin_loader = self.plugin_loader
             SecureRESTHandler.engine = self.engine
 
+            created_srv = None
+            created_th = None
             try:
                 self._ready_event.clear()
-                self.server = _SyncHTTPServer((self.config.host, self.config.port), SecureRESTHandler, ready_event=self._ready_event)
-                # Use a small poll_interval (0.1s) for serve_forever to ensure service_actions is invoked promptly
-                self.thread = threading.Thread(
-                    target=self.server.serve_forever,
+                created_srv = _SyncHTTPServer((self.config.host, self.config.port), SecureRESTHandler, ready_event=self._ready_event)
+                self.server = created_srv
+
+                created_th = threading.Thread(
+                    target=created_srv.serve_forever,
                     kwargs={"poll_interval": 0.1},
                     daemon=True
                 )
+                self.thread = created_th
+
                 self._stop_event.clear()
                 self._stopping = False
                 self._coordinator_thread = None
-                self.thread.start()
+                created_th.start()
 
                 # Ensure server is listening and actively entered the serving loop before reporting success
                 ready = self._ready_event.wait(timeout=2.0)
@@ -1206,19 +1211,38 @@ class SecureRESTAPIServer:
                     th = self.thread
                     self.server = None
                     self.thread = None
-                    self._ready_event.set()
-                    self._stopping = False
-                    self._stop_event.set()
-                    try:
-                        srv.shutdown()
-                    except Exception:
-                        pass
-                    if th and th.is_alive():
-                        th.join(timeout=1.0)
-                    try:
-                        srv.server_close()
-                    except Exception:
-                        pass
+                    self._stopping = True
+
+                    def _startup_timeout_cleanup(srv_obj: HTTPServer, th_obj: Optional[threading.Thread], ready_ev: threading.Event):
+                        try:
+                            ready_ev.wait(timeout=2.0)
+                            srv_obj.shutdown()
+                        except Exception as ex:
+                            print(f"Hiba a timeoutolt szerver leállításakor: {ex}")
+
+                        if th_obj and th_obj.is_alive():
+                            try:
+                                th_obj.join()
+                            except Exception as ex:
+                                print(f"Hiba a timeoutolt szerver szál bevárásakor: {ex}")
+
+                        try:
+                            srv_obj.server_close()
+                        except Exception as ex:
+                            print(f"Hiba a timeoutolt szerver socket lezárásakor: {ex}")
+
+                        with self._lock:
+                            self._stopping = False
+                            self._stop_event.set()
+                            self._ready_event.set()
+
+                    coord = threading.Thread(
+                        target=_startup_timeout_cleanup,
+                        args=(srv, th, self._ready_event),
+                        name="RESTStartupTimeoutCleanup",
+                        daemon=True
+                    )
+                    coord.start()
                     return False
 
                 print(f"REST API indítva: http://{self.config.host}:{self.config.port}")
@@ -1227,9 +1251,22 @@ class SecureRESTAPIServer:
                 print(f"REST API indítási hiba: {e}")
                 self.server = None
                 self.thread = None
-                self._ready_event.set()
                 self._stopping = False
+                self._ready_event.set()
                 self._stop_event.set()
+
+                if created_srv is not None:
+                    try:
+                        created_srv.server_close()
+                    except Exception:
+                        pass
+
+                if created_th is not None and created_th.is_alive() and threading.current_thread() != created_th:
+                    try:
+                        created_th.join(timeout=1.0)
+                    except Exception:
+                        pass
+
                 return False
     
     def stop(self, timeout: float = 5.0) -> bool:
