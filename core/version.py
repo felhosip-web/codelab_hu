@@ -52,7 +52,7 @@ class Version:
 
 
 # === FŐ PROGRAM VERZIÓ ===
-MAIN_VERSION = Version(3, 8, 0)
+MAIN_VERSION = Version(3, 8, 1)
 MAIN_CODENAME = "Code Workspace"
 
 # === PLUGIN API VERZIÓ ===
@@ -65,7 +65,7 @@ PLUGIN_API_HISTORY = {
 API_MANAGER_VERSION = Version(3, 0, 0)
 
 # === REST API VERZIÓ ===
-REST_API_VERSION = Version(1, 0, 0)
+REST_API_VERSION = Version(1, 0, 1)
 
 
 def check_plugin_compatibility(plugin_api_required: str) -> Tuple[bool, str]:
