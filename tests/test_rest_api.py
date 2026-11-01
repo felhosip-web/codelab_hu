@@ -11,7 +11,8 @@ from pathlib import Path
 
 from core.plugin_system import PluginLoader
 from core.engine import Engine
-from core.rest_api import SecureRESTAPIServer, RESTConfig, _run_in_sandbox_process, hash_api_key
+import threading
+from core.rest_api import SecureRESTAPIServer, RESTConfig, _run_in_sandbox_process, hash_api_key, RateLimiter
 from core.version import REST_API_VERSION, API_MANAGER_VERSION, MAIN_VERSION
 from datetime import datetime, timedelta
 
@@ -1808,6 +1809,336 @@ class TestBiztPR1SecurityHardening(unittest.TestCase):
         s8, r8 = self._make_request("/api/v2/keys", method="POST", body={"name": "r8", "rate_limit": 10000}, headers={"X-API-Key": self.admin_key})
         self.assertEqual(s8, 201)
         self.assertEqual(r8["key_info"]["rate_limit_per_min"], 10000)
+
+class TestRateLimiter(unittest.TestCase):
+    """P2-02: RateLimiter memory cleanup, concurrency, and sliding window tests."""
+
+    def test_normal_rate_limit_behavior(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        # Allow up to 3 requests
+        self.assertTrue(limiter.is_allowed("user1", 3))
+        self.assertTrue(limiter.is_allowed("user1", 3))
+        self.assertTrue(limiter.is_allowed("user1", 3))
+        # 4th request within the same minute is denied
+        self.assertFalse(limiter.is_allowed("user1", 3))
+
+    def test_expiration_of_old_timestamps(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        self.assertTrue(limiter.is_allowed("user1", 2))
+        self.assertTrue(limiter.is_allowed("user1", 2))
+        self.assertFalse(limiter.is_allowed("user1", 2))
+
+        # Advance time by 60 seconds (window expires)
+        curr_time += 60.0
+        self.assertTrue(limiter.is_allowed("user1", 2))
+        self.assertEqual(len(limiter.requests["user1"]), 1)
+
+    def test_removal_of_empty_identifiers_on_request(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        limiter.is_allowed("user1", 5)
+        self.assertIn("user1", limiter.requests)
+
+        # Advance time past 60s
+        curr_time += 61.0
+        # If user1 makes a request, old timestamps are pruned and new one is added
+        limiter.is_allowed("user1", 5)
+        self.assertEqual(len(limiter.requests["user1"]), 1)
+
+    def test_opportunistic_cleanup_of_inactive_identifiers(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        # Single request from client_idle
+        limiter.is_allowed("client_idle", 10)
+        self.assertIn("client_idle", limiter.requests)
+
+        # Advance time by 65s (exceeding 60s sliding window and cleanup_interval_sec)
+        curr_time += 65.0
+
+        # An unrelated request comes in from active_client
+        limiter.is_allowed("active_client", 10)
+
+        # client_idle must have been opportunistically purged without explicit cleanup_expired call
+        self.assertNotIn("client_idle", limiter.requests)
+        self.assertIn("active_client", limiter.requests)
+
+    def test_explicit_cleanup_expired(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        limiter.is_allowed("user1", 5)
+        limiter.is_allowed("user2", 5)
+        self.assertEqual(len(limiter.requests), 2)
+
+        # Advance by 30 seconds - user2 makes another request
+        curr_time += 30.0
+        limiter.is_allowed("user2", 5)
+
+        # Advance time so user1's timestamps expire (>60s from 1000.0) but user2 has one active
+        curr_time += 35.0  # now 1065.0: user1 was at 1000 (diff 65), user2 had one at 1000 and one at 1030 (diff 35)
+        removed = limiter.cleanup_expired()
+        self.assertEqual(removed, 1)
+        self.assertNotIn("user1", limiter.requests)
+        self.assertIn("user2", limiter.requests)
+        self.assertEqual(len(limiter.requests["user2"]), 1)
+
+        # Advance time so user2 expires too
+        curr_time += 30.0  # now 1095.0: diff from 1030 is 65
+        removed = limiter.cleanup_expired()
+        self.assertEqual(removed, 1)
+        self.assertNotIn("user2", limiter.requests)
+        self.assertEqual(len(limiter.requests), 0)
+
+    def test_multiple_identifiers_independent(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        # user1 reaches limit
+        self.assertTrue(limiter.is_allowed("user1", 1))
+        self.assertFalse(limiter.is_allowed("user1", 1))
+
+        # user2 is not blocked
+        self.assertTrue(limiter.is_allowed("user2", 1))
+        self.assertFalse(limiter.is_allowed("user2", 1))
+
+    def test_cleanup_does_not_incorrectly_allow_above_limit(self):
+        curr_time = 1000.0
+        limiter = RateLimiter(time_func=lambda: curr_time)
+
+        for _ in range(5):
+            self.assertTrue(limiter.is_allowed("client_x", 5))
+        self.assertFalse(limiter.is_allowed("client_x", 5))
+
+        # Partial expiration
+        curr_time += 30.0  # only 30s elapsed, none expired
+        self.assertFalse(limiter.is_allowed("client_x", 5))
+        self.assertEqual(len(limiter.requests["client_x"]), 5)
+
+    def test_concurrent_access(self):
+        limiter = RateLimiter()
+        num_threads = 10
+        requests_per_thread = 50
+        errors = []
+
+        def worker(client_id):
+            try:
+                for _ in range(requests_per_thread):
+                    limiter.is_allowed(client_id, 1000)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(f"thread_{i % 3}",)) for i in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(errors), 0)
+        # Sum of request counts across the 3 distinct IDs must equal total requests
+        total = sum(len(ts) for ts in limiter.requests.values())
+        self.assertEqual(total, num_threads * requests_per_thread)
+
+class TestServerLifecycle(unittest.TestCase):
+    """P2-03: REST server lifecycle, stop idempotency, socket release, and thread cleanup."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.config_path = Path(self.tmp_dir) / "rest_config.json"
+        self.keys_path = Path(self.tmp_dir) / "api_keys.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_stop_when_never_started(self):
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        self.assertFalse(server.is_running())
+        # Must be safe and not throw
+        server.stop()
+        self.assertFalse(server.is_running())
+
+    def test_start_stop_lifecycle_and_thread_termination(self):
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        started = server.start()
+        self.assertTrue(started)
+        self.assertTrue(server.is_running())
+        self.assertIsNotNone(server.thread)
+        self.assertTrue(server.thread.is_alive())
+
+        serving_th = server.thread
+        server.stop()
+
+        self.assertFalse(server.is_running())
+        self.assertIsNone(server.server)
+        self.assertIsNone(server.thread)
+        self.assertFalse(serving_th.is_alive())
+
+    def test_repeated_stop_calls_idempotent(self):
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        server.start()
+        self.assertTrue(server.is_running())
+
+        server.stop()
+        self.assertFalse(server.is_running())
+        # Call stop again repeatedly
+        server.stop()
+        server.stop()
+        self.assertFalse(server.is_running())
+
+    def test_restarting_after_stop_releases_socket(self):
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        # Start and stop first time
+        self.assertTrue(server.start())
+        server.stop()
+
+        # Start second time on identical port - socket must have been released
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop()
+        self.assertFalse(server.is_running())
+
+class TestContentLengthHandling(unittest.TestCase):
+    """P2-04: Malformed, non-numeric, negative, duplicate, or oversized Content-Length tests."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.plugin_loader = PluginLoader()
+        cls.plugin_loader.load_all()
+        cls.engine = Engine()
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.config_path = Path(self.tmp_dir) / "rest_config.json"
+        self.keys_path = Path(self.tmp_dir) / "api_keys.json"
+
+        self.server = SecureRESTAPIServer(
+            config_path=self.config_path,
+            keys_path=self.keys_path,
+            plugin_loader=self.plugin_loader,
+            engine=self.engine
+        )
+        self.server.config.enabled = True
+        self.server.config.host = "127.0.0.1"
+        self.server.config.port = 8898
+        self.server.config.require_api_key = True
+        self.server.config.enable_execute_endpoints = True
+        self.server.config.enable_admin_endpoints = True
+        self.server.config.max_request_size_kb = 10  # 10 KB limit
+
+        self.admin_key = self.server.create_key("admin", permissions=["read", "write", "execute", "admin"])
+        self.server.start()
+
+    def tearDown(self):
+        self.server.stop()
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def _raw_post(self, raw_headers: dict, raw_body_bytes: bytes) -> tuple[int, dict]:
+        """Send low-level HTTP request with explicit headers using http.client to allow custom/malformed headers."""
+        conn = http.client.HTTPConnection("127.0.0.1", 8898, timeout=5)
+        headers = {
+            "X-API-Key": self.admin_key,
+            "Content-Type": "application/json",
+        }
+        headers.update(raw_headers)
+        conn.request("POST", "/api/v2/keys", body=raw_body_bytes, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        data = resp.read()
+        conn.close()
+        try:
+            parsed = json.loads(data.decode("utf-8"))
+        except Exception:
+            parsed = {}
+        return status, parsed
+
+    def test_valid_content_length(self):
+        body = json.dumps({"name": "valid_key", "permissions": ["read"]}).encode("utf-8")
+        status, data = self._raw_post({"Content-Length": str(len(body))}, body)
+        self.assertEqual(status, 201)
+        self.assertIn("api_key", data)
+
+    def test_missing_content_length_handled(self):
+        # Empty body with missing content-length
+        conn = http.client.HTTPConnection("127.0.0.1", 8898, timeout=5)
+        # Note: http.client adds Content-Length automatically if body is bytes, so we send without body
+        conn.putrequest("POST", "/api/v2/keys")
+        conn.putheader("X-API-Key", self.admin_key)
+        conn.putheader("Content-Type", "application/json")
+        conn.endheaders()
+        resp = conn.getresponse()
+        # When body is empty, json parse produces empty dict -> name validation defaults to unnamed, succeeds with 201
+        self.assertEqual(resp.status, 201)
+        conn.close()
+
+    def test_non_numeric_content_length(self):
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": "not-a-number"}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_negative_content_length(self):
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": "-50"}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_empty_content_length(self):
+        body = b'{"name": "test"}'
+        status, data = self._raw_post({"Content-Length": ""}, body)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_duplicate_ambiguous_content_length(self):
+        conn = http.client.HTTPConnection("127.0.0.1", 8898, timeout=5)
+        conn.putrequest("POST", "/api/v2/keys")
+        conn.putheader("X-API-Key", self.admin_key)
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", "20")
+        conn.putheader("Content-Length", "25")
+        conn.endheaders(b'{"name": "test_dup"}')
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+
+        self.assertEqual(resp.status, 400)
+        self.assertIn("Többszörös vagy kétértelmű Content-Length", data.get("error", ""))
+
+    def test_request_body_exceeding_max_request_size(self):
+        # max_request_size_kb is 10 (10240 bytes)
+        oversized = 11 * 1024
+        body = b"x" * oversized
+        status, data = self._raw_post({"Content-Length": str(oversized)}, body)
+        self.assertEqual(status, 413)
+        self.assertIn("Túl nagy kérés", data.get("error", ""))
+
+    def test_server_remains_operational_after_malformed_requests(self):
+        # Send bad requests
+        self._raw_post({"Content-Length": "xyz"}, b"bad")
+        self._raw_post({"Content-Length": "-1"}, b"bad")
+        self._raw_post({"Content-Length": ""}, b"bad")
+
+        # Now send a valid request - server must remain operational
+        body = json.dumps({"name": "healthy_key", "permissions": ["read"]}).encode("utf-8")
+        status, data = self._raw_post({"Content-Length": str(len(body))}, body)
+        self.assertEqual(status, 201)
+        self.assertIn("api_key", data)
 
 if __name__ == "__main__":
     unittest.main()

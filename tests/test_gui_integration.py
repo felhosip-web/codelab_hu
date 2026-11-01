@@ -554,6 +554,33 @@ class TestApplicationDialogs(unittest.TestCase):
         dialog.close()
         dialog.deleteLater()
 
+    def test_main_window_close_event_stops_rest_server(self):
+        """P2-03: MainWindow.closeEvent() cleanly stops the running REST server."""
+        window = MainWindow()
+        mock_server = MagicMock()
+        window.rest_server = mock_server
+
+        from PySide6.QtGui import QCloseEvent
+        event = QCloseEvent()
+        window.closeEvent(event)
+
+        mock_server.stop.assert_called_once_with(timeout=2.0)
+        window.deleteLater()
+
+    def test_main_window_close_event_handles_rest_server_exception(self):
+        """P2-03: MainWindow.closeEvent() handles exceptions during rest_server.stop gracefully."""
+        window = MainWindow()
+        mock_server = MagicMock()
+        mock_server.stop.side_effect = RuntimeError("Shutdown crash simulated")
+        window.rest_server = mock_server
+
+        from PySide6.QtGui import QCloseEvent
+        event = QCloseEvent()
+        # Should not raise exception
+        window.closeEvent(event)
+        mock_server.stop.assert_called_once_with(timeout=2.0)
+        window.deleteLater()
+
 
 class TestVisualOffscreenRendering(unittest.TestCase):
     @classmethod
