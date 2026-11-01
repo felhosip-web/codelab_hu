@@ -2342,6 +2342,59 @@ class TestServerLifecycle(unittest.TestCase):
         server.stop(timeout=2.0)
         self.assertFalse(server.is_running())
 
+    def test_startup_cancellation_handshake_prevents_late_worker_loop_entry(self):
+        """P2-03: When startup times out before worker enters loop, cancel handshake ensures loop is NEVER entered."""
+        from core.rest_api import _SyncHTTPServer
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        worker_paused_before_loop = threading.Event()
+        release_worker_to_proceed = threading.Event()
+        serve_forever_entered = [False]
+
+        orig_serve_forever = _SyncHTTPServer.serve_forever
+
+        def spy_serve_forever(srv_self, *args, **kwargs):
+            serve_forever_entered[0] = True
+            return orig_serve_forever(srv_self, *args, **kwargs)
+
+        orig_run_gated = _SyncHTTPServer.run_gated_serving_loop
+
+        def gated_with_pause(srv_self, *args, **kwargs):
+            # Pause before acquiring gate lock or entering loop
+            worker_paused_before_loop.set()
+            release_worker_to_proceed.wait(timeout=5.0)
+            return orig_run_gated(srv_self, *args, **kwargs)
+
+        with patch.object(_SyncHTTPServer, "serve_forever", spy_serve_forever), \
+             patch.object(_SyncHTTPServer, "run_gated_serving_loop", gated_with_pause):
+            # start() will wait for ready_event, which won't be set because worker is paused
+            # Use small timeout patch for test speed
+            with patch.object(server._ready_event, "wait", return_value=False):
+                started = server.start()
+                self.assertFalse(started)
+                # Cleanup is now active, server reports stopping
+                self.assertTrue(server.is_running())
+
+            # Now release the worker thread to proceed
+            self.assertTrue(worker_paused_before_loop.is_set())
+            release_worker_to_proceed.set()
+
+            # Wait for cleanup to finish
+            self.assertTrue(server._stop_event.wait(timeout=3.0))
+            self.assertFalse(server.is_running())
+
+            # Verify worker thread was cancelled by handshake and NEVER entered serve_forever()
+            self.assertFalse(serve_forever_entered[0], "Worker entered serve_forever despite cancellation")
+
+            # Verify socket released and clean restart succeeds
+            self.assertTrue(server.start())
+            self.assertTrue(server.is_running())
+            server.stop(timeout=2.0)
+            self.assertFalse(server.is_running())
+
 class TestContentLengthHandling(unittest.TestCase):
     """P2-04: Malformed, non-numeric, negative, duplicate, or oversized Content-Length tests."""
 

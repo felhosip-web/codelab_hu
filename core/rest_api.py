@@ -1001,15 +1001,30 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             self.send_error_json(f"Ismeretlen endpoint: {path}", 404)
 
 class _SyncHTTPServer(HTTPServer):
-    """HTTPServer with reliable startup notification from inside serve_forever()."""
+    """HTTPServer with reliable startup notification from inside serve_forever() and startup cancellation support."""
     def __init__(self, server_address, RequestHandlerClass, ready_event: threading.Event):
         self._ready_event = ready_event
+        self._start_handshake_lock = threading.Lock()
+        self._cancel_startup_event = threading.Event()
+        self._entered_serving_loop = False
         super().__init__(server_address, RequestHandlerClass)
 
     def service_actions(self):
         """Called from inside the active BaseServer.serve_forever() loop."""
         self._ready_event.set()
         super().service_actions()
+
+    def run_gated_serving_loop(self, poll_interval: float = 0.1):
+        """
+        Executes serve_forever only if startup has not been cancelled before loop entry.
+        Guarantees deterministic handshake between start() timeout and worker loop entry.
+        """
+        with self._start_handshake_lock:
+            if self._cancel_startup_event.is_set():
+                return
+            self._entered_serving_loop = True
+
+        self.serve_forever(poll_interval=poll_interval)
 
     def request_shutdown(self):
         """Signals serve_forever to stop without blocking on __is_shut_down."""
@@ -1196,7 +1211,7 @@ class SecureRESTAPIServer:
                 self.server = created_srv
 
                 created_th = threading.Thread(
-                    target=created_srv.serve_forever,
+                    target=created_srv.run_gated_serving_loop,
                     kwargs={"poll_interval": 0.1},
                     daemon=True
                 )
@@ -1217,24 +1232,26 @@ class SecureRESTAPIServer:
                     self.thread = None
                     self._stopping = True
 
-                    def _startup_timeout_cleanup(srv_obj: HTTPServer, th_obj: Optional[threading.Thread], ready_ev: threading.Event):
-                        try:
-                            # Check whether readiness was reached before attempting shutdown()
-                            is_ready = ready_ev.is_set()
-                            if not is_ready:
-                                # Give brief bounded window in case loop was just starting
-                                is_ready = ready_ev.wait(timeout=0.2)
-
-                            if is_ready:
-                                srv_obj.shutdown()
+                    def _startup_timeout_cleanup(srv_obj: _SyncHTTPServer, th_obj: Optional[threading.Thread], ready_ev: threading.Event):
+                        with srv_obj._start_handshake_lock:
+                            if not srv_obj._entered_serving_loop:
+                                # Worker thread has not entered serving loop; cancel it so it never enters serve_forever
+                                srv_obj._cancel_startup_event.set()
+                                entered = False
                             else:
-                                # Never call shutdown() if readiness was never confirmed!
-                                if hasattr(srv_obj, "request_shutdown"):
-                                    srv_obj.request_shutdown()
-                                else:
-                                    srv_obj._BaseServer__shutdown_request = True
-                        except Exception as ex:
-                            print(f"Hiba a timeoutolt szerver leállításakor: {ex}")
+                                entered = True
+
+                        if entered:
+                            # Worker thread confirmed inside serving loop: perform proper shutdown
+                            try:
+                                # Ensure ready_event is confirmed before calling shutdown()
+                                ready_ev.wait(timeout=1.0)
+                                srv_obj.shutdown()
+                            except Exception as ex:
+                                print(f"Hiba a timeoutolt szerver leállításakor: {ex}")
+                        else:
+                            # Worker will exit run_gated_serving_loop immediately without entering serve_forever
+                            pass
 
                         if th_obj and th_obj.is_alive():
                             try:
