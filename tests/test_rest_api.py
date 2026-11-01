@@ -5,6 +5,7 @@ import urllib.request
 import urllib.error
 import http.client
 from http.server import HTTPServer
+from unittest.mock import patch
 import tempfile
 import shutil
 import time
@@ -2218,6 +2219,50 @@ class TestServerLifecycle(unittest.TestCase):
             self.assertFalse(serving_thread.is_alive())
 
         # Verify socket released: start final time and stop cleanly
+        self.assertTrue(server.start())
+        self.assertTrue(server.is_running())
+        server.stop(timeout=2.0)
+        self.assertFalse(server.is_running())
+
+    def test_readiness_signalled_inside_active_loop(self):
+        """P2-03: Verify that readiness event is not signalled before BaseServer.serve_forever loop initializes."""
+        from core.rest_api import _SyncHTTPServer
+        ready_ev = threading.Event()
+        shutdown_cleared_before_ready = [False]
+
+        class TrackingSyncServer(_SyncHTTPServer):
+            def service_actions(self):
+                # Access private __is_shut_down via name mangling to verify it was cleared
+                shut_down_event = getattr(self, "_BaseServer__is_shut_down", None)
+                if shut_down_event is not None and not shut_down_event.is_set():
+                    shutdown_cleared_before_ready[0] = True
+                super().service_actions()
+
+        server = TrackingSyncServer(("127.0.0.1", 8899), SecureRESTHandler, ready_event=ready_ev)
+        t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        t.start()
+
+        self.assertTrue(ready_ev.wait(timeout=2.0))
+        self.assertTrue(shutdown_cleared_before_ready[0])
+
+        server.shutdown()
+        t.join(timeout=2.0)
+        server.server_close()
+
+    def test_start_readiness_timeout_handled_cleanly(self):
+        """P2-03: When start() fails to achieve readiness within timeout, returns False without leaking thread or socket."""
+        server = SecureRESTAPIServer(config_path=self.config_path, keys_path=self.keys_path)
+        server.config.enabled = True
+        server.config.host = "127.0.0.1"
+        server.config.port = 8899
+
+        # Patch _ready_event.wait in start to simulate timeout
+        with patch.object(server._ready_event, "wait", return_value=False):
+            started = server.start()
+            self.assertFalse(started)
+            self.assertFalse(server.is_running())
+
+        # Verify listening socket and thread were cleaned up by starting normally on the same port
         self.assertTrue(server.start())
         self.assertTrue(server.is_running())
         server.stop(timeout=2.0)

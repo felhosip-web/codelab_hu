@@ -1001,14 +1001,15 @@ class SecureRESTHandler(BaseHTTPRequestHandler):
             self.send_error_json(f"Ismeretlen endpoint: {path}", 404)
 
 class _SyncHTTPServer(HTTPServer):
-    """HTTPServer with reliable startup notification when entering serve_forever()."""
+    """HTTPServer with reliable startup notification from inside serve_forever()."""
     def __init__(self, server_address, RequestHandlerClass, ready_event: threading.Event):
         self._ready_event = ready_event
         super().__init__(server_address, RequestHandlerClass)
 
-    def serve_forever(self, poll_interval=0.5):
+    def service_actions(self):
+        """Called from inside the active BaseServer.serve_forever() loop."""
         self._ready_event.set()
-        super().serve_forever(poll_interval=poll_interval)
+        super().service_actions()
 
 
 class SecureRESTAPIServer:
@@ -1186,13 +1187,40 @@ class SecureRESTAPIServer:
             try:
                 self._ready_event.clear()
                 self.server = _SyncHTTPServer((self.config.host, self.config.port), SecureRESTHandler, ready_event=self._ready_event)
-                self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+                # Use a small poll_interval (0.1s) for serve_forever to ensure service_actions is invoked promptly
+                self.thread = threading.Thread(
+                    target=self.server.serve_forever,
+                    kwargs={"poll_interval": 0.1},
+                    daemon=True
+                )
                 self._stop_event.clear()
                 self._stopping = False
                 self._coordinator_thread = None
                 self.thread.start()
-                # Ensure server is listening and entered serving loop before releasing start()
-                self._ready_event.wait(timeout=2.0)
+
+                # Ensure server is listening and actively entered the serving loop before reporting success
+                ready = self._ready_event.wait(timeout=2.0)
+                if not ready:
+                    print("REST API indítási hiba: readiness timeout a serve_forever loop indulásakor")
+                    srv = self.server
+                    th = self.thread
+                    self.server = None
+                    self.thread = None
+                    self._ready_event.set()
+                    self._stopping = False
+                    self._stop_event.set()
+                    try:
+                        srv.shutdown()
+                    except Exception:
+                        pass
+                    if th and th.is_alive():
+                        th.join(timeout=1.0)
+                    try:
+                        srv.server_close()
+                    except Exception:
+                        pass
+                    return False
+
                 print(f"REST API indítva: http://{self.config.host}:{self.config.port}")
                 return True
             except Exception as e:
