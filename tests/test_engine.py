@@ -86,6 +86,8 @@ class TestEngine(unittest.TestCase):
         (self.save_dir / "api_config.json").write_text(json.dumps({"key": "val"}))
         (self.save_dir / "rest_config.json").write_text(json.dumps({"key": "val"}))
         (self.save_dir / "breakpoints.json").write_text(json.dumps({"key": "val"}))
+        (self.save_dir / "workspace_config.json").write_text(json.dumps({"font_family": "Monospace", "plugin_id": "fake", "current_step_idx": 0}))
+        (self.save_dir / "session_export.json").write_text(json.dumps({"export_time": "2026-01-01", "plugin_id": "fake", "current_step_idx": 0}))
         (self.save_dir / "random_non_state.json").write_text(json.dumps({"foo": "bar"}))
 
         # Create valid AppState save
@@ -97,6 +99,7 @@ class TestEngine(unittest.TestCase):
         saves = self.engine.state_manager.list_saves()
         self.assertEqual(len(saves), 1)
         self.assertEqual(saves[0].name, saved_path.name)
+        self.assertNotIn("workspace_config.json", [p.name for p in saves])
 
     def test_breakpoint_triggers_stop(self):
         plugins = self.plugin_loader.list_plugins()

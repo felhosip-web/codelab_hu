@@ -79,7 +79,8 @@ class StateManager:
             "api_keys.json",
             "breakpoints.json",
             "keybindings.json",
-            "session_export.json"
+            "session_export.json",
+            "workspace_config.json",
         }
         saves = []
         for p in self.save_dir.glob("*.json"):

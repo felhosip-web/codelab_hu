@@ -3,6 +3,25 @@
 All notable changes to CodeLab HU are documented in this file.
 The project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.8.4] - 2026-11-03
+
+### Core Maintenance & Plugin Reload Isolation (Bizt-PR#4 — Core Maintenance & Plugin Reload Isolation)
+- **Exclude "workspace_config.json" from StateManager Discovery (P4-01)**:
+  - Added `workspace_config.json` to `EXCLUDE_FILES` set in `StateManager.list_saves()` in `core/engine.py`.
+  - Prevents user-specific workspace configuration files from entering state file discovery, session loading, or state management workflows while preserving normal workspace configuration loading and saving.
+  - Updated documentation in `core/README.md` and added regression tests in `tests/test_engine.py`.
+- **Truly Targeted PluginLoader.reload(target) (P4-02)**:
+  - Refactored `PluginLoader` in `core/plugin_system.py` to share folder loading logic across `load_all()` and `reload(target)` via `_load_plugin_folder()`.
+  - Tracked folder associations in `plugin_folders` to reliably map plugin IDs and features to their defining module directories.
+  - `reload()` without target retains full reload of all plugins.
+  - `reload(target)` reloads only the plugin, plugin category/feature, or folder targeted, without re-importing or disturbing unrelated plugins.
+  - Preserves unrelated plugin instances (`is`) and internal state across targeted reloads.
+  - Only evicts targeted plugin modules from `sys.modules`, ensuring unrelated module files are not re-executed.
+  - Handles missing targets and target loading errors deterministically without corrupting the existing registry or impacting unrelated plugins.
+  - Added comprehensive regression tests in `tests/test_plugin_loader.py`.
+- **Version Updates**:
+  - Bumped `MAIN_VERSION` to `3.8.4`. (Kept `REST_API_VERSION` at `1.0.2` as the REST API HTTP contract itself remains unchanged).
+
 ## [3.8.3] - 2026-11-02
 
 ### GUI & Usability Security Improvements (Bizt-PR#3 — GUI & Usability Security Improvements)
