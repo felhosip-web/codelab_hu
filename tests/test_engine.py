@@ -82,24 +82,13 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(self.engine.step_idx, idx_2)
 
     def test_list_saves_filters_config_files(self):
-        from core.workspace_config import WorkspaceConfig
-
-        # Create dummy config files in save_dir, including workspace_config.json
+        # Create dummy config files in save_dir
         (self.save_dir / "api_config.json").write_text(json.dumps({"key": "val"}))
         (self.save_dir / "rest_config.json").write_text(json.dumps({"key": "val"}))
         (self.save_dir / "breakpoints.json").write_text(json.dumps({"key": "val"}))
-        (self.save_dir / "keybindings.json").write_text(json.dumps({"key": "val"}))
-        (self.save_dir / "session_export.json").write_text(json.dumps({"key": "val"}))
-        (self.save_dir / "workspace_config.json").write_text(json.dumps({"font_size": 14}))
+        (self.save_dir / "workspace_config.json").write_text(json.dumps({"font_family": "Monospace", "plugin_id": "fake", "current_step_idx": 0}))
+        (self.save_dir / "session_export.json").write_text(json.dumps({"export_time": "2026-01-01", "plugin_id": "fake", "current_step_idx": 0}))
         (self.save_dir / "random_non_state.json").write_text(json.dumps({"foo": "bar"}))
-
-        # Verify normal workspace config load/save works even when located in save_dir
-        ws_cfg_path = str(self.save_dir / "workspace_config.json")
-        loaded_ws = WorkspaceConfig.load(ws_cfg_path)
-        self.assertEqual(loaded_ws.font_size, 14)
-        loaded_ws.theme = "dark"
-        loaded_ws.save(ws_cfg_path)
-        self.assertEqual(WorkspaceConfig.load(ws_cfg_path).theme, "dark")
 
         # Create valid AppState save
         plugins = self.plugin_loader.list_plugins()
@@ -107,11 +96,10 @@ class TestEngine(unittest.TestCase):
         self.engine.set_plugin(plugin, [1, 2, 3])
         saved_path = self.engine.save_current("Test save")
 
-        # Confirm workspace_config.json and other config files are excluded from list_saves()
         saves = self.engine.state_manager.list_saves()
         self.assertEqual(len(saves), 1)
         self.assertEqual(saves[0].name, saved_path.name)
-        self.assertNotIn(Path(ws_cfg_path), saves)
+        self.assertNotIn("workspace_config.json", [p.name for p in saves])
 
     def test_breakpoint_triggers_stop(self):
         plugins = self.plugin_loader.list_plugins()

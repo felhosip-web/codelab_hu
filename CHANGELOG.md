@@ -6,21 +6,21 @@ The project adheres to [Semantic Versioning](https://semver.org/).
 ## [3.8.4] - 2026-11-03
 
 ### Core Maintenance & Plugin Reload Isolation (Bizt-PR#4 — Core Maintenance & Plugin Reload Isolation)
-- **"workspace_config.json" Exclusion from State Discovery (P4-01)**:
-  - Added `"workspace_config.json"` to the `EXCLUDE_FILES` set in `StateManager.list_saves()` (`core/engine.py`).
-  - Ensures user-specific UI and workspace configuration files stored in `saves/` are never inadvertently discovered as AppState saved files.
-  - Normal loading and saving via `WorkspaceConfig.load()` and `WorkspaceConfig.save()` remains completely functional.
-  - Regression tests in `tests/test_engine.py` verify exclusion from `list_saves()` alongside normal workspace configuration persistence and legitimate save state discovery.
-- **Truly Targeted "PluginLoader.reload(target)" (P4-02)**:
-  - Extracted common folder loading, validation, instantiation, hook execution, and conflict detection logic into `_load_plugin_folder()` in `core/plugin_system.py`.
-  - Targeted reload `PluginLoader.reload(target)` now reloads only the specified plugin ID, category/feature group, or plugin folder.
-  - Unrelated plugin instances retain their exact identity (`is`) and internal state without re-executing unrelated plugin modules or clearing unrelated entries from `sys.modules`.
-  - Non-targeted reload `PluginLoader.reload()` preserves the existing full reload behavior (`load_all()`).
-  - Handles missing targets and failed reloads deterministically without corrupting existing plugin registrations.
-  - Preserves version compatibility checks, duplicate-ID conflict checks, and plugin hooks.
-  - Regression tests in `tests/test_plugin_loader.py` verify full reload, targeted reload by ID, targeted reload by feature, instance identity retention, module execution isolation, deterministic failure handling, and duplicate-ID enforcement.
+- **Exclude "workspace_config.json" from StateManager Discovery (P4-01)**:
+  - Added `workspace_config.json` to `EXCLUDE_FILES` set in `StateManager.list_saves()` in `core/engine.py`.
+  - Prevents user-specific workspace configuration files from entering state file discovery, session loading, or state management workflows while preserving normal workspace configuration loading and saving.
+  - Updated documentation in `core/README.md` and added regression tests in `tests/test_engine.py`.
+- **Truly Targeted PluginLoader.reload(target) (P4-02)**:
+  - Refactored `PluginLoader` in `core/plugin_system.py` to share folder loading logic across `load_all()` and `reload(target)` via `_load_plugin_folder()`.
+  - Tracked folder associations in `plugin_folders` to reliably map plugin IDs and features to their defining module directories.
+  - `reload()` without target retains full reload of all plugins.
+  - `reload(target)` reloads only the plugin, plugin category/feature, or folder targeted, without re-importing or disturbing unrelated plugins.
+  - Preserves unrelated plugin instances (`is`) and internal state across targeted reloads.
+  - Only evicts targeted plugin modules from `sys.modules`, ensuring unrelated module files are not re-executed.
+  - Handles missing targets and target loading errors deterministically without corrupting the existing registry or impacting unrelated plugins.
+  - Added comprehensive regression tests in `tests/test_plugin_loader.py`.
 - **Version Updates**:
-  - Bumped `MAIN_VERSION` to `3.8.4`. (`REST_API_VERSION` retained at `1.0.2` as the HTTP API contract is unchanged).
+  - Bumped `MAIN_VERSION` to `3.8.4`. (Kept `REST_API_VERSION` at `1.0.2` as the REST API HTTP contract itself remains unchanged).
 
 ## [3.8.3] - 2026-11-02
 
