@@ -22,6 +22,7 @@ from core.rest_api import (
     hash_api_key,
     RateLimiter,
     validate_allowed_ips,
+    filter_valid_allowed_ips,
 )
 from core.version import REST_API_VERSION, API_MANAGER_VERSION, MAIN_VERSION
 from datetime import datetime, timedelta
@@ -2613,19 +2614,21 @@ class TestContentLengthHandling(unittest.TestCase):
         self.assertIn("api_key", data)
 
 class AllowedIPsValidationTest(unittest.TestCase):
-    """P3-01: Unit tests for validate_allowed_ips and RESTConfig.allowed_ips."""
+    """P3-01: Unit tests for validate_allowed_ips, filter_valid_allowed_ips, and RESTConfig.allowed_ips."""
 
     def test_validate_allowed_ips_valid_entries(self):
-        # IPv4, IPv6, CIDR ranges, ignoring empty/whitespace lines
+        """Tests that valid IPv4, IPv6, and CIDR ranges pass validation and blank lines are ignored."""
         entries = ["127.0.0.1", "192.168.1.0/24", "   ", "2001:db8::1", "2001:db8::/32", ""]
         validated = validate_allowed_ips(entries)
         self.assertEqual(validated, ["127.0.0.1", "192.168.1.0/24", "2001:db8::1", "2001:db8::/32"])
 
     def test_validate_allowed_ips_empty_list(self):
+        """Tests that empty or whitespace-only lists validate to an empty list."""
         self.assertEqual(validate_allowed_ips([]), [])
         self.assertEqual(validate_allowed_ips(["  ", ""]), [])
 
     def test_validate_allowed_ips_invalid_types_and_values(self):
+        """Tests that malformed IPs and invalid data types raise ValueError."""
         with self.assertRaises(ValueError):
             validate_allowed_ips("127.0.0.1")  # not a list/tuple
 
@@ -2642,6 +2645,7 @@ class AllowedIPsValidationTest(unittest.TestCase):
             validate_allowed_ips(["192.168.1.0/33"])
 
     def test_rest_config_allowed_ips_post_init_validation(self):
+        """Tests that RESTConfig.__post_init__ strictly validates allowed_ips."""
         cfg = RESTConfig(allowed_ips=["10.0.0.0/8", "192.168.0.1"])
         self.assertEqual(cfg.allowed_ips, ["10.0.0.0/8", "192.168.0.1"])
 
@@ -2649,6 +2653,7 @@ class AllowedIPsValidationTest(unittest.TestCase):
             RESTConfig(allowed_ips=["not_an_ip"])
 
     def test_rest_config_deserialization_compatibility(self):
+        """Tests backwards compatibility when deserializing from dictionary."""
         # Missing allowed_ips -> defaults to ["127.0.0.1"]
         legacy_data = {"enabled": True, "host": "127.0.0.1", "port": 8080}
         cfg = RESTConfig.from_dict(legacy_data)
@@ -2663,6 +2668,52 @@ class AllowedIPsValidationTest(unittest.TestCase):
         empty_data = {"allowed_ips": []}
         cfg3 = RESTConfig.from_dict(empty_data)
         self.assertEqual(cfg3.allowed_ips, [])
+
+    def test_filter_valid_allowed_ips_filtering_and_warning(self):
+        """Tests filter_valid_allowed_ips extracts valid entries and ignores malformed ones with warning."""
+        mixed = ["127.0.0.1", "invalid_ip", "10.0.0.0/8", "   ", "2001:db8::1", "bad_cidr/99"]
+        res = filter_valid_allowed_ips(mixed)
+        self.assertEqual(res, ["127.0.0.1", "10.0.0.0/8", "2001:db8::1"])
+
+        # Non-list input
+        self.assertEqual(filter_valid_allowed_ips("not-a-list"), [])
+        # Non-string element
+        self.assertEqual(filter_valid_allowed_ips(["127.0.0.1", 12345]), ["127.0.0.1"])
+
+    def test_load_config_preserves_other_settings_when_malformed_allowed_ips_present(self):
+        """Tests that loading a saved config with malformed allowed_ips filters bad entries and preserves all settings."""
+        cfg_path = Path("saves/test_malformed_allowed_ips_load.json")
+        if cfg_path.exists():
+            cfg_path.unlink()
+
+        raw_config = {
+            "enabled": True,
+            "host": "0.0.0.0",
+            "port": 9090,
+            "require_api_key": False,
+            "enable_cors": True,
+            "allowed_ips": ["192.168.1.50", "malformed_ip_address", "10.0.0.0/16"],
+            "enable_trusted_proxy": True,
+            "trusted_proxies": ["127.0.0.1"]
+        }
+        cfg_path.parent.mkdir(exist_ok=True)
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(raw_config, f)
+
+        server = SecureRESTAPIServer(config_path=str(cfg_path))
+        # Ensure server loaded without falling back to default config:
+        self.assertTrue(server.config.enabled)
+        self.assertEqual(server.config.host, "0.0.0.0")
+        self.assertEqual(server.config.port, 9090)
+        self.assertFalse(server.config.require_api_key)
+        self.assertTrue(server.config.enable_cors)
+        self.assertTrue(server.config.enable_trusted_proxy)
+        self.assertEqual(server.config.trusted_proxies, ["127.0.0.1"])
+        # Malformed IP filtered out, valid IPs preserved:
+        self.assertEqual(server.config.allowed_ips, ["192.168.1.50", "10.0.0.0/16"])
+
+        if cfg_path.exists():
+            cfg_path.unlink()
 
 
 if __name__ == "__main__":

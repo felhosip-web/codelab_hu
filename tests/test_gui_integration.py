@@ -493,19 +493,30 @@ class TestApplicationDialogs(unittest.TestCase):
 
         self.assertIsNotNone(dialog.allowed_ips_edit)
 
+        config_file_path = Path("saves/test_gui_rest_config.json")
+        if config_file_path.exists():
+            config_file_path.unlink()
+
         # 1. Invalid allowed_ips save attempt -> warning dialog, config not saved
+        # Record snapshots before the invalid save attempt
+        initial_live_host = dialog.rest_server.config.host
+        initial_live_allowed_ips = list(dialog.rest_server.config.allowed_ips)
+        initial_file_exists = config_file_path.exists()
+        initial_file_bytes = config_file_path.read_bytes() if initial_file_exists else None
+
         dialog.allowed_ips_edit.setPlainText("invalid_ip_999.999.999.999")
-        # Change another field to verify it is NOT saved when validation fails
         dialog.host_edit.setText("192.168.1.200")
         with patch.object(QMessageBox, 'warning') as mock_warn:
             dialog.on_save()
             mock_warn.assert_called_once()
             self.assertIn("Érvénytelen engedélyezett IP/CIDR", mock_warn.call_args[0][2])
 
-        # Ensure disk config was NOT modified by failed save
-        if Path("saves/test_gui_rest_config.json").exists():
-            disk_cfg = SecureRESTAPIServer(config_path="saves/test_gui_rest_config.json")
-            self.assertNotEqual(disk_cfg.config.host, "192.168.1.200")
+        # Assert live config and file state remain unchanged
+        self.assertEqual(dialog.rest_server.config.host, initial_live_host)
+        self.assertEqual(dialog.rest_server.config.allowed_ips, initial_live_allowed_ips)
+        self.assertEqual(config_file_path.exists(), initial_file_exists)
+        if initial_file_exists:
+            self.assertEqual(config_file_path.read_bytes(), initial_file_bytes)
 
         # 2. Valid allowed_ips, but invalid proxy settings save attempt -> warning dialog, config not saved
         dialog.host_edit.setText("127.0.0.1")
@@ -588,6 +599,7 @@ class TestApplicationDialogs(unittest.TestCase):
         clipboard_text = QApplication.clipboard().text()
         self.assertNotEqual(clipboard_text, raw_token)
         self.assertEqual(len(clipboard_text), 64)
+        self.assertEqual(clipboard_text, item.data(Qt.UserRole))
 
         dialog.close()
         dialog.deleteLater()

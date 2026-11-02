@@ -283,6 +283,7 @@ Ajánlott beállítás éleshez:
         self.on_refresh_log()
     
     def refresh_keys(self):
+        """Refreshes the API keys list widget with stored SHA-256 hashes and metadata."""
         self.keys_list.clear()
         for key_obj in self.rest_server.list_keys():
             item = QListWidgetItem(f"{key_obj.name:15} | HASH: {key_obj.key[:16]}... (SHA-256) | {','.join(key_obj.permissions):15} | rate={key_obj.rate_limit_per_min:3}/m | usage={key_obj.usage_count:4} | exp={key_obj.expires_at or 'soha'} | ips={key_obj.ip_whitelist}")
@@ -290,6 +291,7 @@ Ajánlott beállítás éleshez:
             self.keys_list.addItem(item)
     
     def on_save(self):
+        """Validates IP inputs and saves current settings to disk config."""
         raw_allowed_ips_text = self.allowed_ips_edit.toPlainText().strip()
         raw_allowed_ips = [line.strip() for line in raw_allowed_ips_text.split('\n') if line.strip()]
 
@@ -341,6 +343,7 @@ Ajánlott beállítás éleshez:
         QMessageBox.information(self, "Leállítva", "REST API leállítva")
     
     def on_create_key(self):
+        """Prompts for key parameters, generates key, and displays the secret token once."""
         from PySide6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(self, "Új kulcs", "Név:")
         if not ok or not name:
@@ -366,6 +369,7 @@ Ajánlott beállítás éleshez:
         )
     
     def on_revoke_key(self):
+        """Revokes the selected key by its stored SHA-256 hash."""
         item = self.keys_list.currentItem()
         if not item:
             return
@@ -375,6 +379,7 @@ Ajánlott beállítás éleshez:
         QMessageBox.information(self, "Visszavonva", f"API kulcs visszavonva (hash: {key_hash[:16]}...)")
     
     def on_copy_key(self):
+        """Copies the selected key's stored SHA-256 digest to the clipboard with an explicit warning."""
         item = self.keys_list.currentItem()
         if not item:
             return

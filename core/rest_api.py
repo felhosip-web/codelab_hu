@@ -112,6 +112,32 @@ def validate_allowed_ips(allowed_ips: List[str]) -> List[str]:
     """
     return validate_ip_network_list(allowed_ips, param_name="allowed_ips", allow_empty_entries=True)
 
+def filter_valid_allowed_ips(entries: Any) -> List[str]:
+    """
+    Filters and normalizes allowed IP/CIDR entries during configuration loading only.
+    Ignores blank entries and logs a clear warning for malformed entries without rejecting
+    the entire configuration or resetting other valid settings.
+    """
+    if not isinstance(entries, (list, tuple)):
+        print(f"Figyelmeztetés: 'allowed_ips' lista várt, de {type(entries).__name__} érkezett; üres lista használata")
+        return []
+
+    valid_entries: List[str] = []
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, str):
+            print(f"Figyelmeztetés: 'allowed_ips' bejegyzés a(z) {idx}. indexen nem sztring ({type(entry).__name__}); figyelmen kívül hagyva")
+            continue
+        cleaned = entry.strip()
+        if not cleaned:
+            continue
+        try:
+            parse_ip_or_network(cleaned)
+            valid_entries.append(cleaned)
+        except ValueError as e:
+            print(f"Figyelmeztetés: Érvénytelen 'allowed_ips' bejegyzés ({cleaned!r}) a konfiguráció betöltésekor figyelmen kívül hagyva: {e}")
+
+    return valid_entries
+
 def is_ip_in_network_list(ip_str: str, network_list: List[str]) -> bool:
     """
     Reusable CIDR-aware helper: checks if an IP address matches any entry in network_list.
@@ -197,14 +223,17 @@ class RESTConfig:
     trusted_proxies: List[str] = field(default_factory=list)
 
     def __post_init__(self):
+        """Validates configuration fields ensuring strict security defaults."""
         self.allowed_ips = validate_allowed_ips(self.allowed_ips)
         self.trusted_proxies = validate_trusted_proxies(self.trusted_proxies)
 
     def to_dict(self):
+        """Serializes configuration to dictionary format."""
         return asdict(self)
 
     @staticmethod
     def from_dict(data):
+        """Constructs RESTConfig instance filtering unknown fields from input dictionary."""
         cfg_data = {k: v for k, v in data.items() if k in RESTConfig.__dataclass_fields__}
         return RESTConfig(**cfg_data)
 
@@ -1079,10 +1108,13 @@ class SecureRESTAPIServer:
         SecureRESTHandler.engine = engine
     
     def load_config(self):
+        """Loads REST configuration from disk file, safely filtering malformed allowed_ips entries."""
         if self.config_path.exists():
             try:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                if isinstance(data, dict) and "allowed_ips" in data:
+                    data["allowed_ips"] = filter_valid_allowed_ips(data["allowed_ips"])
                 self.config = RESTConfig.from_dict(data)
             except Exception as e:
                 print(f"REST config load hiba: {e}")
