@@ -491,24 +491,76 @@ class TestApplicationDialogs(unittest.TestCase):
         self.assertIsNotNone(dialog.enable_trusted_proxy_check)
         self.assertIsNotNone(dialog.trusted_proxies_edit)
 
-        # 1. Invalid proxy settings save attempt -> warning dialog, config not saved
+        self.assertIsNotNone(dialog.allowed_ips_edit)
+
+        config_file_path = Path("saves/test_gui_rest_config.json")
+        if config_file_path.exists():
+            config_file_path.unlink()
+
+        # 1. Invalid allowed_ips save attempt -> warning dialog, config not saved
+        # Record snapshots before the invalid save attempt
+        initial_live_host = dialog.rest_server.config.host
+        initial_live_allowed_ips = list(dialog.rest_server.config.allowed_ips)
+        initial_file_exists = config_file_path.exists()
+        initial_file_bytes = config_file_path.read_bytes() if initial_file_exists else None
+
+        dialog.allowed_ips_edit.setPlainText("invalid_ip_999.999.999.999")
+        dialog.host_edit.setText("192.168.1.200")
+        with patch.object(QMessageBox, 'warning') as mock_warn:
+            dialog.on_save()
+            mock_warn.assert_called_once()
+            self.assertIn("Érvénytelen engedélyezett IP/CIDR", mock_warn.call_args[0][2])
+
+        # Assert live config and file state remain unchanged
+        self.assertEqual(dialog.rest_server.config.host, initial_live_host)
+        self.assertEqual(dialog.rest_server.config.allowed_ips, initial_live_allowed_ips)
+        self.assertEqual(config_file_path.exists(), initial_file_exists)
+        if initial_file_exists:
+            self.assertEqual(config_file_path.read_bytes(), initial_file_bytes)
+
+        # 2. Valid allowed_ips, but invalid proxy settings save attempt -> warning dialog, config not saved
+        dialog.host_edit.setText("127.0.0.1")
+        dialog.allowed_ips_edit.setPlainText("127.0.0.1\n10.0.0.0/8\n2001:db8::/32")
         dialog.enable_trusted_proxy_check.setChecked(True)
         dialog.trusted_proxies_edit.setPlainText("invalid_ip_300.300.300.300")
+
+        # Snapshot live config and file state before the invalid trusted-proxy save attempt
+        proxy_pre_live_host = dialog.rest_server.config.host
+        proxy_pre_live_allowed_ips = list(dialog.rest_server.config.allowed_ips)
+        proxy_pre_file_exists = config_file_path.exists()
+        proxy_pre_file_bytes = config_file_path.read_bytes() if proxy_pre_file_exists else None
+
         with patch.object(QMessageBox, 'warning') as mock_warn:
             dialog.on_save()
             mock_warn.assert_called_once()
             # call_args[0]: (parent, title, text)
             self.assertIn("Érvénytelen megbízható proxy", mock_warn.call_args[0][2])
 
-        # 2. Valid proxy settings save attempt -> saved to disk
+        # Assert live config and file state remain unchanged after rejected save
+        self.assertEqual(dialog.rest_server.config.host, proxy_pre_live_host)
+        self.assertEqual(dialog.rest_server.config.allowed_ips, proxy_pre_live_allowed_ips)
+        self.assertEqual(config_file_path.exists(), proxy_pre_file_exists)
+        if proxy_pre_file_exists:
+            self.assertEqual(config_file_path.read_bytes(), proxy_pre_file_bytes)
+
+        # 3. Valid proxy settings and valid allowed_ips save attempt -> saved to disk
         dialog.trusted_proxies_edit.setPlainText("10.0.0.0/8\n192.168.1.1")
         with patch.object(QMessageBox, 'information'):
             dialog.on_save()
 
         # Reload server config from disk file and verify persistence
         reloaded_server = SecureRESTAPIServer(config_path="saves/test_gui_rest_config.json")
+        self.assertEqual(reloaded_server.config.allowed_ips, ["127.0.0.1", "10.0.0.0/8", "2001:db8::/32"])
         self.assertTrue(reloaded_server.config.enable_trusted_proxy)
         self.assertEqual(reloaded_server.config.trusted_proxies, ["10.0.0.0/8", "192.168.1.1"])
+
+        # 4. Empty allowed_ips configuration
+        dialog.allowed_ips_edit.setPlainText("   \n\n  ")
+        with patch.object(QMessageBox, 'information'):
+            dialog.on_save()
+
+        reloaded_server = SecureRESTAPIServer(config_path="saves/test_gui_rest_config.json")
+        self.assertEqual(reloaded_server.config.allowed_ips, [])
 
         dialog.close()
         dialog.deleteLater()
@@ -517,6 +569,76 @@ class TestApplicationDialogs(unittest.TestCase):
         p = Path("saves/test_gui_rest_config.json")
         if p.exists():
             p.unlink()
+
+    def test_rest_api_dialog_api_key_hash_clarity(self):
+        """P3-02: Test API key UI wording makes clear distinction between secret tokens and stored SHA-256 hashes."""
+        from pathlib import Path
+        from PySide6.QtWidgets import QApplication
+        from core.rest_api import hash_api_key
+
+        test_keys_path = Path("saves/test_gui_api_keys.json")
+        test_cfg_path = Path("saves/test_gui_rest_config2.json")
+        for p in [test_keys_path, test_cfg_path]:
+            if p.exists():
+                p.unlink()
+
+        loader = PluginLoader()
+        engine = Engine()
+        server = SecureRESTAPIServer(
+            config_path=str(test_cfg_path),
+            keys_path=str(test_keys_path),
+            plugin_loader=loader,
+            engine=engine,
+        )
+        # Create a test key
+        raw_token = server.create_key("test_operator", ["read"], rate_limit=50)
+        expected_hash = hash_api_key(raw_token)
+
+        dialog = RESTAPIDialog(server, plugin_loader=loader, engine=engine)
+        dialog.show()
+        self.app.processEvents()
+
+        # Check button text and tooltip
+        self.assertEqual(dialog.btn_copy_key.text(), "📋 Hash másolása")
+        self.assertIn("SHA-256 hash", dialog.btn_copy_key.toolTip())
+
+        # Identify the item corresponding to the created raw_token
+        target_item = None
+        for i in range(dialog.keys_list.count()):
+            candidate = dialog.keys_list.item(i)
+            if candidate.data(Qt.UserRole) == expected_hash:
+                target_item = candidate
+                break
+
+        self.assertIsNotNone(target_item, "Created API key item not found in keys_list")
+        self.assertEqual(target_item.data(Qt.UserRole), expected_hash)
+        self.assertIn("HASH:", target_item.text())
+        self.assertIn("SHA-256", target_item.text())
+
+        # Select the item and trigger on_copy_key
+        dialog.keys_list.setCurrentItem(target_item)
+        with patch.object(QMessageBox, 'information') as mock_info:
+            dialog.on_copy_key()
+            mock_info.assert_called_once()
+            # Dialog message must warn that the hash cannot be used for authentication
+            info_msg = mock_info.call_args[0][2]
+            self.assertIn("SHA-256 hash lenyomata", info_msg)
+            self.assertIn("NEM használható API tokenként hitelesítéshez", info_msg)
+
+        # Clipboard content must be the SHA-256 hash, not the raw secret token
+        clipboard_text = QApplication.clipboard().text()
+        self.assertNotEqual(clipboard_text, raw_token)
+        self.assertEqual(len(clipboard_text), 64)
+        self.assertEqual(clipboard_text, target_item.data(Qt.UserRole))
+
+        dialog.close()
+        dialog.deleteLater()
+
+        # Cleanup
+        for path_str in ["saves/test_gui_rest_config2.json", "saves/test_gui_api_keys.json"]:
+            p = Path(path_str)
+            if p.exists():
+                p.unlink()
 
     def test_settings_dialog(self):
         """Test SettingsDialog keybinding list rendering."""

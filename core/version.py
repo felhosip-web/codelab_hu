@@ -52,7 +52,7 @@ class Version:
 
 
 # === FŐ PROGRAM VERZIÓ ===
-MAIN_VERSION = Version(3, 8, 2)
+MAIN_VERSION = Version(3, 8, 3)
 MAIN_CODENAME = "Code Workspace"
 
 # === PLUGIN API VERZIÓ ===

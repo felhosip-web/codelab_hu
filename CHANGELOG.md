@@ -3,6 +3,23 @@
 All notable changes to CodeLab HU are documented in this file.
 The project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.8.3] - 2026-11-02
+
+### GUI & Usability Security Improvements (Bizt-PR#3 — GUI & Usability Security Improvements)
+- **Expose and Validate "allowed_ips" in REST API GUI (P3-01)**:
+  - Added dedicated multiline configuration field (`allowed_ips_edit`) in `ui/rest_api_dialog.py` for configuring `allowed_ips`.
+  - Added `validate_allowed_ips` validation in `core/rest_api.py` and enforce it in `RESTConfig.__post_init__` as well as the GUI save workflow.
+  - Supports IPv4 addresses, IPv6 addresses, and CIDR network ranges.
+  - Rejects malformed addresses and CIDR subnets with actionable GUI warning dialog without corrupting configuration or writing invalid settings to disk.
+  - Correctly preserves existing configuration when unrelated settings are edited.
+- **Clarify API Key Hash vs Token Wording (P3-02)**:
+  - Updated API key management UI labels, tooltips, list entries, and messages in `ui/rest_api_dialog.py` to make an explicit distinction between secret API tokens and stored SHA-256 hashes.
+  - Formatted API key entries in the GUI list to explicitly identify stored values as SHA-256 hashes (`HASH: ... (SHA-256 lenyomat)`).
+  - Renamed copy button and action to explicitly copy the SHA-256 hash digest, and added explicit warnings in confirmation dialogs clarifying that the copied hash cannot be used for authentication.
+  - Emphasized one-time secret token display upon key creation, informing users that unhashed tokens cannot be retrieved again from the system.
+- **Version Updates**:
+  - Bumped `MAIN_VERSION` to `3.8.3`. (Kept `REST_API_VERSION` at `1.0.2` as the REST API HTTP contract itself remains unchanged).
+
 ## [3.8.2] - 2026-11-01
 
 ### Reliability & Server Lifecycle (Bizt-PR#2 — REST API Reliability & Lifecycle)
