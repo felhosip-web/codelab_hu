@@ -52,8 +52,8 @@ class Version:
 
 
 # === FŐ PROGRAM VERZIÓ ===
-MAIN_VERSION = Version(3, 8, 3)
-MAIN_CODENAME = "Code Workspace"
+MAIN_VERSION = Version(3, 8, 4)
+MAIN_CODENAME = "Core Maintenance"
 
 # === PLUGIN API VERZIÓ ===
 PLUGIN_API_VERSION = Version(1, 0, 0)
