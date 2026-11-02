@@ -9,6 +9,8 @@ from unittest.mock import patch
 import tempfile
 import shutil
 import time
+import io
+import contextlib
 from pathlib import Path
 
 from core.plugin_system import PluginLoader
@@ -2671,14 +2673,26 @@ class AllowedIPsValidationTest(unittest.TestCase):
 
     def test_filter_valid_allowed_ips_filtering_and_warning(self):
         """Tests filter_valid_allowed_ips extracts valid entries and ignores malformed ones with warning."""
-        mixed = ["127.0.0.1", "invalid_ip", "10.0.0.0/8", "   ", "2001:db8::1", "bad_cidr/99"]
-        res = filter_valid_allowed_ips(mixed)
-        self.assertEqual(res, ["127.0.0.1", "10.0.0.0/8", "2001:db8::1"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mixed = ["127.0.0.1", "invalid_ip", "10.0.0.0/8", "   ", "2001:db8::1", "bad_cidr/99"]
+            res = filter_valid_allowed_ips(mixed)
 
-        # Non-list input
-        self.assertEqual(filter_valid_allowed_ips("not-a-list"), [])
-        # Non-string element
-        self.assertEqual(filter_valid_allowed_ips(["127.0.0.1", 12345]), ["127.0.0.1"])
+            # Non-list input
+            non_list_res = filter_valid_allowed_ips("not-a-list")
+            # Non-string element
+            non_str_res = filter_valid_allowed_ips(["127.0.0.1", 12345])
+
+        out = buf.getvalue()
+        # Assert warning messages were produced for malformed entries
+        self.assertIn("Érvénytelen 'allowed_ips' bejegyzés ('invalid_ip')", out)
+        self.assertIn("Érvénytelen 'allowed_ips' bejegyzés ('bad_cidr/99')", out)
+        self.assertIn("'allowed_ips' lista várt, de str érkezett", out)
+        self.assertIn("'allowed_ips' bejegyzés a(z) 1. indexen nem sztring (int)", out)
+
+        self.assertEqual(res, ["127.0.0.1", "10.0.0.0/8", "2001:db8::1"])
+        self.assertEqual(non_list_res, [])
+        self.assertEqual(non_str_res, ["127.0.0.1"])
 
     def test_load_config_preserves_other_settings_when_malformed_allowed_ips_present(self):
         """Tests that loading a saved config with malformed allowed_ips filters bad entries and preserves all settings."""
