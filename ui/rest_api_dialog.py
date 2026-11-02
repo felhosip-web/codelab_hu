@@ -99,6 +99,12 @@ class RESTAPIDialog(QDialog):
         self.block_ips_check.setChecked(self.rest_server.config.block_unknown_ips)
         config_form.addRow("Ismeretlen IP blokkolás:", self.block_ips_check)
 
+        self.allowed_ips_edit = QTextEdit()
+        self.allowed_ips_edit.setPlaceholderText("Engedélyezett IP-címek és CIDR hálózatok soronként (pl. 127.0.0.1, 192.168.1.0/24, 2001:db8::/32)")
+        self.allowed_ips_edit.setMaximumHeight(80)
+        self.allowed_ips_edit.setPlainText("\n".join(getattr(self.rest_server.config, "allowed_ips", []) or []))
+        config_form.addRow("Engedélyezett IP-k (IP/CIDR):", self.allowed_ips_edit)
+
         self.enable_trusted_proxy_check = QCheckBox("Megbízható proxy (Trusted Proxy) engedélyezése")
         self.enable_trusted_proxy_check.setChecked(getattr(self.rest_server.config, "enable_trusted_proxy", False))
         config_form.addRow("Trusted Proxy támogatás:", self.enable_trusted_proxy_check)
@@ -138,7 +144,11 @@ class RESTAPIDialog(QDialog):
         keys_tab = QWidget()
         keys_layout = QVBoxLayout(keys_tab)
         
-        keys_info = QLabel("API kulcsok: név, jogok (read/write/execute/admin), lejárat, IP whitelist, rate limit. Kulcs nélkül nincs hozzáférés ha require_api_key=True!")
+        keys_info = QLabel(
+            "API kulcsok: név, tárolt SHA-256 hash (lenyomat), jogok, lejárat, IP whitelist, rate limit. "
+            "FIGYELEM: A listában kizárólag a tárolt SHA-256 lenyomatok (hash) láthatók, amelyek NEM használhatók hitelesítésre! "
+            "A működő, titkos API tokent a szerver csak a létrehozáskor jelzi ki egyszer, azt követően nem visszanyerhető."
+        )
         keys_info.setStyleSheet("background: #dfe6e9; padding: 6px; border-radius: 4px; font-size: 11px;")
         keys_info.setWordWrap(True)
         keys_layout.addWidget(keys_info)
@@ -156,7 +166,8 @@ class RESTAPIDialog(QDialog):
         self.btn_revoke_key.clicked.connect(self.on_revoke_key)
         keys_btn_layout.addWidget(self.btn_revoke_key)
         
-        self.btn_copy_key = QPushButton("📋 Másol")
+        self.btn_copy_key = QPushButton("📋 Hash másolása")
+        self.btn_copy_key.setToolTip("A kiválasztott kulcs tárolt SHA-256 hash lenyomatának másolása (nem hitelesítési token)")
         self.btn_copy_key.clicked.connect(self.on_copy_key)
         keys_btn_layout.addWidget(self.btn_copy_key)
         
@@ -274,11 +285,21 @@ Ajánlott beállítás éleshez:
     def refresh_keys(self):
         self.keys_list.clear()
         for key_obj in self.rest_server.list_keys():
-            item = QListWidgetItem(f"{key_obj.name:15} | {key_obj.key[:20]}... | {','.join(key_obj.permissions):15} | rate={key_obj.rate_limit_per_min:3}/m | usage={key_obj.usage_count:4} | exp={key_obj.expires_at or 'soha'} | ips={key_obj.ip_whitelist}")
+            item = QListWidgetItem(f"{key_obj.name:15} | HASH: {key_obj.key[:16]}... (SHA-256) | {','.join(key_obj.permissions):15} | rate={key_obj.rate_limit_per_min:3}/m | usage={key_obj.usage_count:4} | exp={key_obj.expires_at or 'soha'} | ips={key_obj.ip_whitelist}")
             item.setData(Qt.UserRole, key_obj.key)
             self.keys_list.addItem(item)
     
     def on_save(self):
+        raw_allowed_ips_text = self.allowed_ips_edit.toPlainText().strip()
+        raw_allowed_ips = [line.strip() for line in raw_allowed_ips_text.split('\n') if line.strip()]
+
+        try:
+            from core.rest_api import validate_allowed_ips
+            validated_allowed_ips = validate_allowed_ips(raw_allowed_ips)
+        except ValueError as e:
+            QMessageBox.warning(self, "Hibás konfiguráció", f"Érvénytelen engedélyezett IP/CIDR cím:\n{e}")
+            return
+
         raw_proxies_text = self.trusted_proxies_edit.toPlainText().strip()
         raw_proxies = [line.strip() for line in raw_proxies_text.split('\n') if line.strip()]
 
@@ -302,6 +323,7 @@ Ajánlott beállítás éleshez:
         self.rest_server.config.enable_admin_endpoints = self.enable_admin_check.isChecked()
         self.rest_server.config.enable_sandbox = self.enable_sandbox_check.isChecked()
         self.rest_server.config.block_unknown_ips = self.block_ips_check.isChecked()
+        self.rest_server.config.allowed_ips = validated_allowed_ips
         self.rest_server.config.enable_trusted_proxy = self.enable_trusted_proxy_check.isChecked()
         self.rest_server.config.trusted_proxies = validated_proxies
 
@@ -334,25 +356,37 @@ Ajánlott beállítás éleshez:
         
         new_key = self.rest_server.create_key(name=name, permissions=perms, rate_limit=rate)
         self.refresh_keys()
-        QMessageBox.information(self, "Kulcs létrehozva", f"Kulcs: {new_key}\nMentsd el, csak most látszik teljesen!\nNév: {name}\nJogok: {perms}")
+        QMessageBox.information(
+            self,
+            "Új API kulcs létrehozva",
+            f"Titkos API token (hitelesítéshez):\n{new_key}\n\n"
+            "FONTOS: Másold ki és mentsd el most biztonságosan! Ez a titkos token kizárólag most látható.\n"
+            "A rendszerben csak a kulcs SHA-256 hash lenyomata kerül tárolásra, így a token később nem szerezhető vissza!\n\n"
+            f"Név: {name}\nJogok: {perms}"
+        )
     
     def on_revoke_key(self):
         item = self.keys_list.currentItem()
         if not item:
             return
-        key = item.data(Qt.UserRole)
-        self.rest_server.revoke_key(key)
+        key_hash = item.data(Qt.UserRole)
+        self.rest_server.revoke_key(key_hash)
         self.refresh_keys()
-        QMessageBox.information(self, "Visszavonva", f"Kulcs visszavonva: {key[:20]}...")
+        QMessageBox.information(self, "Visszavonva", f"API kulcs visszavonva (hash: {key_hash[:16]}...)")
     
     def on_copy_key(self):
         item = self.keys_list.currentItem()
         if not item:
             return
-        key = item.data(Qt.UserRole)
+        key_hash = item.data(Qt.UserRole)
         from PySide6.QtWidgets import QApplication
-        QApplication.clipboard().setText(key)
-        QMessageBox.information(self, "Másolva", "Kulcs vágólapra másolva")
+        QApplication.clipboard().setText(key_hash)
+        QMessageBox.information(
+            self,
+            "SHA-256 Hash Másolva",
+            f"A vágólapra a kulcs SHA-256 hash lenyomata került:\n{key_hash}\n\n"
+            "⚠️ FIGYELEM: Ez csupán a tárolt hash lenyomat, NEM használható API tokenként hitelesítéshez!"
+        )
     
     def on_refresh_log(self):
         log_path = Path(self.rest_server.config.log_file)

@@ -14,7 +14,15 @@ from pathlib import Path
 from core.plugin_system import PluginLoader
 from core.engine import Engine
 import threading
-from core.rest_api import SecureRESTAPIServer, SecureRESTHandler, RESTConfig, _run_in_sandbox_process, hash_api_key, RateLimiter
+from core.rest_api import (
+    SecureRESTAPIServer,
+    SecureRESTHandler,
+    RESTConfig,
+    _run_in_sandbox_process,
+    hash_api_key,
+    RateLimiter,
+    validate_allowed_ips,
+)
 from core.version import REST_API_VERSION, API_MANAGER_VERSION, MAIN_VERSION
 from datetime import datetime, timedelta
 
@@ -2603,6 +2611,59 @@ class TestContentLengthHandling(unittest.TestCase):
         status, data = self._raw_post({"Content-Length": str(len(body))}, body)
         self.assertEqual(status, 201)
         self.assertIn("api_key", data)
+
+class AllowedIPsValidationTest(unittest.TestCase):
+    """P3-01: Unit tests for validate_allowed_ips and RESTConfig.allowed_ips."""
+
+    def test_validate_allowed_ips_valid_entries(self):
+        # IPv4, IPv6, CIDR ranges, ignoring empty/whitespace lines
+        entries = ["127.0.0.1", "192.168.1.0/24", "   ", "2001:db8::1", "2001:db8::/32", ""]
+        validated = validate_allowed_ips(entries)
+        self.assertEqual(validated, ["127.0.0.1", "192.168.1.0/24", "2001:db8::1", "2001:db8::/32"])
+
+    def test_validate_allowed_ips_empty_list(self):
+        self.assertEqual(validate_allowed_ips([]), [])
+        self.assertEqual(validate_allowed_ips(["  ", ""]), [])
+
+    def test_validate_allowed_ips_invalid_types_and_values(self):
+        with self.assertRaises(ValueError):
+            validate_allowed_ips("127.0.0.1")  # not a list/tuple
+
+        with self.assertRaises(ValueError):
+            validate_allowed_ips(["127.0.0.1", 123])
+
+        with self.assertRaises(ValueError):
+            validate_allowed_ips(["invalid-ip-format"])
+
+        with self.assertRaises(ValueError):
+            validate_allowed_ips(["256.0.0.1"])
+
+        with self.assertRaises(ValueError):
+            validate_allowed_ips(["192.168.1.0/33"])
+
+    def test_rest_config_allowed_ips_post_init_validation(self):
+        cfg = RESTConfig(allowed_ips=["10.0.0.0/8", "192.168.0.1"])
+        self.assertEqual(cfg.allowed_ips, ["10.0.0.0/8", "192.168.0.1"])
+
+        with self.assertRaises(ValueError):
+            RESTConfig(allowed_ips=["not_an_ip"])
+
+    def test_rest_config_deserialization_compatibility(self):
+        # Missing allowed_ips -> defaults to ["127.0.0.1"]
+        legacy_data = {"enabled": True, "host": "127.0.0.1", "port": 8080}
+        cfg = RESTConfig.from_dict(legacy_data)
+        self.assertEqual(cfg.allowed_ips, ["127.0.0.1"])
+
+        # Populated allowed_ips
+        pop_data = {"allowed_ips": ["10.0.0.0/8", "192.168.1.1"]}
+        cfg2 = RESTConfig.from_dict(pop_data)
+        self.assertEqual(cfg2.allowed_ips, ["10.0.0.0/8", "192.168.1.1"])
+
+        # Explicit empty list
+        empty_data = {"allowed_ips": []}
+        cfg3 = RESTConfig.from_dict(empty_data)
+        self.assertEqual(cfg3.allowed_ips, [])
+
 
 if __name__ == "__main__":
     unittest.main()

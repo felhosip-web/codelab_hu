@@ -103,6 +103,15 @@ def validate_trusted_proxies(trusted_proxies: List[str]) -> List[str]:
     """
     return validate_ip_network_list(trusted_proxies, param_name="trusted_proxies", allow_empty_entries=True)
 
+def validate_allowed_ips(allowed_ips: List[str]) -> List[str]:
+    """
+    Validates a list of allowed IP/CIDR strings for RESTConfig.
+    Allows empty/blank lines (e.g. from multiline GUI text input).
+    Returns normalized list of non-empty strings if all are valid.
+    Raises ValueError if any entry is invalid.
+    """
+    return validate_ip_network_list(allowed_ips, param_name="allowed_ips", allow_empty_entries=True)
+
 def is_ip_in_network_list(ip_str: str, network_list: List[str]) -> bool:
     """
     Reusable CIDR-aware helper: checks if an IP address matches any entry in network_list.
@@ -188,6 +197,7 @@ class RESTConfig:
     trusted_proxies: List[str] = field(default_factory=list)
 
     def __post_init__(self):
+        self.allowed_ips = validate_allowed_ips(self.allowed_ips)
         self.trusted_proxies = validate_trusted_proxies(self.trusted_proxies)
 
     def to_dict(self):
