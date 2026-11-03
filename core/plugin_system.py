@@ -195,10 +195,13 @@ class PluginLoader:
         if target_folders is None:
             target_folders = self.plugin_folders
 
-        if not plugin_folder.is_dir():
+        if not plugin_folder.is_dir() or plugin_folder.name.startswith((".", "__")):
             return errors
         plugin_file = plugin_folder / "plugin.py"
         if not plugin_file.exists():
+            err_msg = f"[PluginLoader] plugin.py nem található: {plugin_folder.name}"
+            errors.append(err_msg)
+            print(err_msg)
             return errors
 
         module_name = f"plugins.{plugin_folder.name}.plugin"
@@ -435,27 +438,34 @@ class PluginLoader:
                 elif target_str in self.plugin_features or target_str in prev_folder_plugins:
                     # Specifikus plugin ID célzás:
                     # Kizárólag a célzott plugin ID-t cseréljük le az új példányra.
+                    # Ha a plugin ID át lett nevezve az új fájlban, eltávolítjuk a régit, és regisztráljuk az újat.
                     # Az azonos mappában lévő testvér pluginok megtartják meglévő példányaikat (is) és belső állapotukat!
                     if target_str in staging_plugins:
                         self.plugins[target_str] = staging_plugins[target_str]
                         self.plugin_features[target_str] = staging_features[target_str]
                         self.plugin_folders[target_str] = staging_folders[target_str]
                     else:
-                        # Ha az új kód nem exportálja a célzott ID-t
+                        # Ha a plugin átnevezésre került, töröljük a régi ID-t és felvesszük az újonnan deklaráltat
                         self.plugins.pop(target_str, None)
                         self.plugin_features.pop(target_str, None)
                         self.plugin_folders.pop(target_str, None)
+                        for new_pid, inst in staging_plugins.items():
+                            if new_pid not in prev_folder_plugins:
+                                self.plugins[new_pid] = inst
+                                self.plugin_features[new_pid] = staging_features[new_pid]
+                                self.plugin_folders[new_pid] = staging_folders[new_pid]
                 else:
                     # Feature kategória célzás:
-                    # A kategóriához tartozó pluginokat frissítjük a stagingből,
-                    # a más kategóriájú testvér pluginokat megőrizzük.
+                    # Töröljük a korábban a célzott kategóriához tartozó pluginokat ebben a mappában
                     for pid in list(prev_folder_plugins.keys()):
                         if prev_folder_features.get(pid) == target_str:
                             self.plugins.pop(pid, None)
                             self.plugin_features.pop(pid, None)
                             self.plugin_folders.pop(pid, None)
+                    # Regisztráljuk a stagingből azokat a pluginokat, amelyek korábban a célzott feature-höz tartoztak
+                    # (feature migráció esetén is megőrizve az új feature-metadata-val), vagy újonnan azt deklarálják
                     for pid, inst in staging_plugins.items():
-                        if staging_features.get(pid) == target_str:
+                        if staging_features.get(pid) == target_str or prev_folder_features.get(pid) == target_str:
                             self.plugins[pid] = inst
                             self.plugin_features[pid] = staging_features[pid]
                             self.plugin_folders[pid] = staging_folders[pid]

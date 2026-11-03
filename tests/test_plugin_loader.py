@@ -2,6 +2,8 @@
 import unittest
 import tempfile
 import shutil
+import time
+import os
 from pathlib import Path
 
 from core.plugin_system import PluginLoader, AlgorithmPluginBase
@@ -119,6 +121,7 @@ class EmptyIdPlugin(AlgorithmPluginBase):
 
         loaded_ids, errors = loader.reload(target="bubble_sort")
         self.assertEqual(len(errors), 0)
+        self.assertIn("bubble_sort", loaded_ids)
 
         bubble_new = loader.get_plugin("bubble_sort")
         linear_new = loader.get_plugin("linear_search")
@@ -571,6 +574,142 @@ class RollbackTargetPlugin(AlgorithmPluginBase):
             sibling_after2 = loader.get_plugin("rollback_sibling")
             self.assertIs(sibling_after2, sibling_old)
             self.assertEqual(getattr(sibling_after2, "_custom_state", None), "sibling_state_intact")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_missing_plugin_py_reports_error(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "empty_plugin_dir"
+            folder.mkdir()
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+            self.assertEqual(len(loader.plugins), 0)
+            errors = loader.get_load_errors()
+            self.assertGreater(len(errors), 0)
+            self.assertTrue(any("plugin.py nem található" in err for err in errors))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_targeted_reload_renamed_plugin_id(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "dynamic_id_dir"
+            folder.mkdir()
+            plugin_file = folder / "plugin.py"
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class SiblingPlugin(AlgorithmPluginBase):
+    id = "sibling_p"
+    name = "Sibling"
+    plugin_type = "general"
+
+class OldPlugin(AlgorithmPluginBase):
+    id = "old_id"
+    name = "Old"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            sibling_old = loader.get_plugin("sibling_p")
+            self.assertIsNotNone(loader.get_plugin("old_id"))
+
+            # Remove pycache if present and bump mtime for immediate re-execution
+            shutil.rmtree(folder / "__pycache__", ignore_errors=True)
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class SiblingPlugin(AlgorithmPluginBase):
+    id = "sibling_p"
+    name = "Sibling"
+    plugin_type = "general"
+
+class NewPlugin(AlgorithmPluginBase):
+    id = "new_id"
+    name = "New"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+            t = time.time() + 2
+            os.utime(plugin_file, (t, t))
+
+            loaded_ids, errors = loader.reload(target="old_id")
+            self.assertEqual(len(errors), 0)
+            # Old ID must be removed
+            self.assertIsNone(loader.get_plugin("old_id"))
+            # New ID must be registered
+            self.assertIsNotNone(loader.get_plugin("new_id"))
+            # Sibling plugin must remain identical instance
+            sibling_new = loader.get_plugin("sibling_p")
+            self.assertIs(sibling_old, sibling_new)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_targeted_reload_feature_migration(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "feature_mig_dir"
+            folder.mkdir()
+            plugin_file = folder / "plugin.py"
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class MigratingPlugin(AlgorithmPluginBase):
+    id = "migrating_p"
+    name = "Migrating Plugin"
+    plugin_type = "feature_old"
+
+class UnrelatedPlugin(AlgorithmPluginBase):
+    id = "unrelated_p"
+    name = "Unrelated Plugin"
+    plugin_type = "other_feature"
+""",
+                encoding="utf-8"
+            )
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            unrelated_old = loader.get_plugin("unrelated_p")
+            self.assertEqual(loader.plugin_features.get("migrating_p"), "feature_old")
+
+            # Remove pycache if present and bump mtime
+            shutil.rmtree(folder / "__pycache__", ignore_errors=True)
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class MigratingPlugin(AlgorithmPluginBase):
+    id = "migrating_p"
+    name = "Migrating Plugin"
+    plugin_type = "feature_new"
+
+class UnrelatedPlugin(AlgorithmPluginBase):
+    id = "unrelated_p"
+    name = "Unrelated Plugin"
+    plugin_type = "other_feature"
+""",
+                encoding="utf-8"
+            )
+            t = time.time() + 2
+            os.utime(plugin_file, (t, t))
+
+            loaded_ids, errors = loader.reload(target="feature_old")
+            self.assertEqual(len(errors), 0)
+            # Migrating plugin is reloaded with updated feature
+            migrating_new = loader.get_plugin("migrating_p")
+            self.assertIsNotNone(migrating_new)
+            self.assertEqual(loader.plugin_features.get("migrating_p"), "feature_new")
+            # Unrelated plugin remains identical instance
+            unrelated_new = loader.get_plugin("unrelated_p")
+            self.assertIs(unrelated_old, unrelated_new)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
