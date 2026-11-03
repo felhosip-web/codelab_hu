@@ -485,5 +485,94 @@ class OtherPlugin(AlgorithmPluginBase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+
+    def test_failed_reload_restores_sys_modules_and_registry(self):
+        """Verify that failed module replacement restores exact previous sys.modules object identity ('is') and preserves previous working plugin instances."""
+        import sys
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "mod_rollback_test"
+            folder.mkdir()
+            plugin_file = folder / "plugin.py"
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class RollbackSiblingPlugin(AlgorithmPluginBase):
+    id = "rollback_sibling"
+    name = "Rollback Sibling"
+    plugin_type = "general"
+
+class RollbackTargetPlugin(AlgorithmPluginBase):
+    id = "rollback_target"
+    name = "Rollback Target"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            mod_name = "plugins.mod_rollback_test.plugin"
+            self.assertIn(mod_name, sys.modules)
+            old_mod_obj = sys.modules[mod_name]
+            sibling_old = loader.get_plugin("rollback_sibling")
+            target_old = loader.get_plugin("rollback_target")
+            self.assertIsNotNone(sibling_old)
+            self.assertIsNotNone(target_old)
+
+            sibling_old._custom_state = "sibling_state_intact"
+
+            # 1. Break plugin.py with syntax error (module execution / spec load failure)
+            plugin_file.write_text("def broken_code_syntax(:\n", encoding="utf-8")
+
+            loaded_ids, errors = loader.reload(target="rollback_target")
+            self.assertGreater(len(errors), 0)
+
+            # Check that sys.modules has restored the EXACT old module object
+            self.assertIn(mod_name, sys.modules)
+            self.assertIs(sys.modules[mod_name], old_mod_obj)
+
+            # Check that sibling plugin remains accessible and intact
+            sibling_after = loader.get_plugin("rollback_sibling")
+            self.assertIs(sibling_after, sibling_old)
+            self.assertEqual(getattr(sibling_after, "_custom_state", None), "sibling_state_intact")
+
+            # 2. Test failure during plugin instantiation/validation (runtime exception in class)
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class RollbackSiblingPlugin(AlgorithmPluginBase):
+    id = "rollback_sibling"
+    name = "Rollback Sibling"
+    plugin_type = "general"
+
+class RollbackTargetPlugin(AlgorithmPluginBase):
+    id = "rollback_target"
+    name = "Rollback Target"
+    plugin_type = "general"
+    def __init__(self):
+        super().__init__()
+        raise RuntimeError("Validation / initialization error in target plugin")
+""",
+                encoding="utf-8"
+            )
+
+            loaded_ids, errors = loader.reload(target="rollback_target")
+            self.assertGreater(len(errors), 0)
+
+            # sys.modules MUST still be restored to old_mod_obj
+            self.assertIn(mod_name, sys.modules)
+            self.assertIs(sys.modules[mod_name], old_mod_obj)
+
+            # Sibling plugin remains accessible and identical
+            sibling_after2 = loader.get_plugin("rollback_sibling")
+            self.assertIs(sibling_after2, sibling_old)
+            self.assertEqual(getattr(sibling_after2, "_custom_state", None), "sibling_state_intact")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()

@@ -202,6 +202,9 @@ class PluginLoader:
             return errors
 
         module_name = f"plugins.{plugin_folder.name}.plugin"
+        had_prev_module = module_name in sys.modules
+        prev_module = sys.modules.get(module_name)
+
         try:
             if module_name in sys.modules:
                 del sys.modules[module_name]
@@ -213,6 +216,10 @@ class PluginLoader:
                 err_msg = f"[PluginLoader] Spec nem tölthető be: {plugin_folder.name}"
                 errors.append(err_msg)
                 print(err_msg)
+                if had_prev_module:
+                    sys.modules[module_name] = prev_module
+                elif module_name in sys.modules:
+                    del sys.modules[module_name]
                 return errors
 
             module = importlib.util.module_from_spec(spec)
@@ -287,7 +294,18 @@ class PluginLoader:
                     print(
                         f"[PluginLoader] Betöltve: {instance.name} ({plugin_id}) [feature: {feat_name}]"
                     )
+
+            if errors:
+                # Ha bármelyik plugin osztály betöltése meghiúsult a modulban, visszaállítjuk az eredeti modult
+                if had_prev_module:
+                    sys.modules[module_name] = prev_module
+                elif module_name in sys.modules:
+                    del sys.modules[module_name]
         except Exception as e:
+            if had_prev_module:
+                sys.modules[module_name] = prev_module
+            elif module_name in sys.modules:
+                del sys.modules[module_name]
             err_msg = f"[PluginLoader] Hiba {plugin_folder.name} betöltésekor: {e}"
             errors.append(err_msg)
             print(err_msg)
