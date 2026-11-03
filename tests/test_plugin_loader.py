@@ -268,7 +268,9 @@ class TargetPlugin(AlgorithmPluginBase):
             loader.load_all()
 
             good_instance = loader.get_plugin("good_plugin")
+            target_instance = loader.get_plugin("target_plugin")
             self.assertIsNotNone(good_instance)
+            self.assertIsNotNone(target_instance)
 
             # Break target_file with syntax error
             target_file.write_text("def broken_syntax(:\n", encoding="utf-8")
@@ -278,8 +280,8 @@ class TargetPlugin(AlgorithmPluginBase):
             self.assertGreater(len(errors), 0)
             # Unrelated plugin remains loaded and identical
             self.assertIs(loader.get_plugin("good_plugin"), good_instance)
-            # Target plugin was not successfully loaded
-            self.assertIsNone(loader.get_plugin("target_plugin"))
+            # On failed reload, target plugin instance is safely preserved rather than deleted
+            self.assertIs(loader.get_plugin("target_plugin"), target_instance)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -710,6 +712,51 @@ class UnrelatedPlugin(AlgorithmPluginBase):
             # Unrelated plugin remains identical instance
             unrelated_new = loader.get_plugin("unrelated_p")
             self.assertIs(unrelated_old, unrelated_new)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_targeted_reload_missing_plugin_file_preserves_target_instance_and_metadata(self):
+        """When a targeted plugin's plugin.py is deleted/missing, reload returns an error and preserves the old plugin instance and metadata intact."""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "missing_file_mod"
+            folder.mkdir()
+            plugin_file = folder / "plugin.py"
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class StablePlugin(AlgorithmPluginBase):
+    id = "stable_plugin"
+    name = "Stable Plugin"
+    plugin_type = "feature_stable"
+""",
+                encoding="utf-8"
+            )
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            old_instance = loader.get_plugin("stable_plugin")
+            self.assertIsNotNone(old_instance)
+            old_feature = loader.plugin_features.get("stable_plugin")
+            old_folder = loader.plugin_folders.get("stable_plugin")
+
+            # Remove plugin.py to simulate missing file
+            plugin_file.unlink()
+
+            loaded_ids, errors = loader.reload(target="stable_plugin")
+
+            # Assert error is returned
+            self.assertGreater(len(errors), 0)
+            self.assertTrue(any("plugin.py nem található" in err for err in errors))
+
+            # Assert old plugin remains registered and object identity ('is') is preserved
+            current_instance = loader.get_plugin("stable_plugin")
+            self.assertIs(current_instance, old_instance)
+
+            # Assert feature and folder metadata remain unchanged
+            self.assertEqual(loader.plugin_features.get("stable_plugin"), old_feature)
+            self.assertEqual(loader.plugin_folders.get("stable_plugin"), old_folder)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

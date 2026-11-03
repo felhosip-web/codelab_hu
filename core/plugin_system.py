@@ -409,20 +409,14 @@ class PluginLoader:
             )
 
             if folder_errors:
-                # P0: Ha hiba történt a mappa betöltése során (pl. szintaktikai hiba, vagy egy későbbi
-                # plugin osztály betöltési hibája), visszaállítjuk a korábbi működő regisztrációkat
-                # a testvér pluginokhoz, megőrizve azok eredeti példányait ('is') és állapotát!
+                # P0: Ha hiba történt a mappa betöltése során (pl. hiányzó plugin.py, szintaktikai hiba,
+                # vagy egy plugin osztály betöltési hibája), visszaállítjuk az ÖSSZES korábbi működő
+                # regisztrációt ebben a mappában (beleértve a célzott plugint is), megőrizve
+                # azok eredeti példányait ('is') és belső állapotát, megelőzve az állapotvesztést!
                 for pid, inst in prev_folder_plugins.items():
-                    if pid in target_pids and pid not in staging_plugins:
-                        # A közvetlenül célzott vagy betöltésben meghiúsult plugin, ami nincs a stagingben
-                        self.plugins.pop(pid, None)
-                        self.plugin_features.pop(pid, None)
-                        self.plugin_folders.pop(pid, None)
-                    else:
-                        # Korábban működő testvér plugin: megőrizzük / visszaállítjuk az eredeti példányt
-                        self.plugins[pid] = inst
-                        self.plugin_features[pid] = prev_folder_features[pid]
-                        self.plugin_folders[pid] = prev_folder_names[pid]
+                    self.plugins[pid] = inst
+                    self.plugin_features[pid] = prev_folder_features[pid]
+                    self.plugin_folders[pid] = prev_folder_names[pid]
                 self.errors.extend(folder_errors)
             else:
                 # Sikeres betöltés: Alkalmazzuk a frissítést a célzott hatáskör szerint
