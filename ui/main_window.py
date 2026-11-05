@@ -344,6 +344,24 @@ class MainWindow(QMainWindow):
                 self.current_plugin.time_complexity, self.current_plugin.space_complexity
             )
 
+    def resolve_step_code_line(self, step, lang=None) -> int:
+        """
+        Nyelvtudatos segédfüggvény a lépés forráskódbeli sorának feloldásához.
+        Ha a plugin támogatja a get_line_for_tag metódust és a lépés rendelkezik extra['tag']-gel,
+        akkor a kiválasztott nyelvhez tartozó pontos sorszámot adja vissza.
+        Ellenkező esetben a klasszikus code_line/line attribútumot adja vissza (visszafelé kompatibilitás).
+        """
+        if not step:
+            return 0
+        if lang is None and hasattr(self, 'lang_combo'):
+            lang = self.lang_combo.currentText()
+        if self.current_plugin and hasattr(self.current_plugin, 'get_line_for_tag') and hasattr(step, 'extra'):
+            extra = getattr(step, 'extra', {}) or {}
+            tag = extra.get('tag')
+            if tag and lang:
+                return self.current_plugin.get_line_for_tag(lang, tag)
+        return getattr(step, 'code_line', getattr(step, 'line', 0))
+
     def on_language_changed(self, lang):
         if not self.current_plugin:
             return
@@ -352,11 +370,7 @@ class MainWindow(QMainWindow):
         self.code_viewer.set_title(f"{self.current_plugin.id}.cpp - {lang}")
         if self.steps and 0 <= self.current_step_idx < len(self.steps):
             step = self.steps[self.current_step_idx]
-            code_line = getattr(step, 'code_line', getattr(step, 'line', 0))
-            if hasattr(self.current_plugin, 'get_line_for_tag') and hasattr(step, 'extra'):
-                tag = step.extra.get('tag')
-                if tag:
-                    code_line = self.current_plugin.get_line_for_tag(lang, tag)
+            code_line = self.resolve_step_code_line(step, lang)
             self.code_viewer.highlight_line(code_line)
 
     def is_array_based_plugin(self) -> bool:
@@ -741,8 +755,8 @@ class MainWindow(QMainWindow):
         if not self.current_plugin or not self.steps or self.current_step_idx >= len(self.steps):
             return
         step = self.steps[self.current_step_idx]
-        line = getattr(step, 'code_line', getattr(step, 'line', None))
-        if line is not None:
+        line = self.resolve_step_code_line(step)
+        if line:
             plugin_id = getattr(self.current_plugin, 'id', '')
             enabled = self.breakpoint_manager.toggle_breakpoint(plugin_id, line)
             status = "bekapcsolva" if enabled else "kikapcsolva"
@@ -753,14 +767,8 @@ class MainWindow(QMainWindow):
         key = getattr(step, 'key', None)
         sorted_end = getattr(step, 'sorted_end', -1)
         highlight = getattr(step, 'highlight', getattr(step, 'highlight_indices', []))
-        code_line = getattr(step, 'code_line', getattr(step, 'line', 0))
+        code_line = self.resolve_step_code_line(step)
         explanation = getattr(step, 'explanation', '')
-
-        if self.current_plugin and hasattr(self.current_plugin, 'get_line_for_tag') and hasattr(step, 'extra'):
-            tag = step.extra.get('tag')
-            if tag:
-                current_lang = self.lang_combo.currentText()
-                code_line = self.current_plugin.get_line_for_tag(current_lang, tag)
 
         self.array_viewer.update_state(arr, key, sorted_end, highlight)
         if hasattr(self, 'viz_stack'):

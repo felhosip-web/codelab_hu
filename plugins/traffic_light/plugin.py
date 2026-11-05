@@ -2,150 +2,96 @@
 """
 Traffic Light Educational Plugin - Phase 1
 Oktatási jelzőlámpa szimuláció valós idejű kód- és végrehajtássor-követéssel.
+A forrássorok és logikai lépések összerendelése karbantartható inline címkékből
+származtatott (nem törékeny, kézzel számolt sorpozíciókból).
 """
-from typing import Dict, Generator, List, Optional
+import re
+from typing import Dict, Generator, List, Optional, Tuple
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
 from core.step import VisualizationStep
 
-# 1-based logikai kód-fázis sorcímkék a 6 támogatott nyelvhez
-LOGICAL_TAG_LINES: Dict[str, Dict[str, int]] = {
-    "Python": {
-        "INIT": 2,
-        "LOOP_START": 4,
-        "RED": 6,
-        "RED_YELLOW": 8,
-        "GREEN": 10,
-        "YELLOW": 12,
-        "COMPLETE": 14,
-    },
-    "C++": {
-        "INIT": 3,
-        "LOOP_START": 5,
-        "RED": 7,
-        "RED_YELLOW": 9,
-        "GREEN": 11,
-        "YELLOW": 13,
-        "COMPLETE": 15,
-    },
-    "C": {
-        "INIT": 4,
-        "LOOP_START": 6,
-        "RED": 8,
-        "RED_YELLOW": 10,
-        "GREEN": 12,
-        "YELLOW": 14,
-        "COMPLETE": 16,
-    },
-    "BASIC": {
-        "INIT": 2,
-        "LOOP_START": 4,
-        "RED": 6,
-        "RED_YELLOW": 8,
-        "GREEN": 10,
-        "YELLOW": 12,
-        "COMPLETE": 14,
-    },
-    "Java": {
-        "INIT": 4,
-        "LOOP_START": 6,
-        "RED": 8,
-        "RED_YELLOW": 10,
-        "GREEN": 12,
-        "YELLOW": 14,
-        "COMPLETE": 16,
-    },
-    "Pascal": {
-        "INIT": 7,
-        "LOOP_START": 8,
-        "RED": 11,
-        "RED_YELLOW": 13,
-        "GREEN": 15,
-        "YELLOW": 17,
-        "COMPLETE": 19,
-    },
-}
-
-CODE_TEMPLATES: Dict[str, str] = {
+# Nyers sablonok inline [TAG:XYZ] jelölésekkel a végrehajtható utasításokon
+RAW_CODE_TEMPLATES: Dict[str, str] = {
     "Python": """# Oktatási Jelzőlámpa Szimuláció - 1. Fázis
-state = "INIT"
+state = "INIT"  # [TAG:INIT]
 
-for cycle in range(1, total_cycles + 1):
+for cycle in range(1, total_cycles + 1):  # [TAG:LOOP_START]
     # 1. Piros jelzés: Megállás!
-    state = set_signal(red=True, yellow=False, green=False, duration=red_sec)
+    state = set_signal(red=True, yellow=False, green=False, duration=red_sec)  # [TAG:RED]
     # 2. Piros-sárga jelzés: Felkészülés az indulásra
-    state = set_signal(red=True, yellow=True, green=False, duration=ry_sec)
+    state = set_signal(red=True, yellow=True, green=False, duration=ry_sec)  # [TAG:RED_YELLOW]
     # 3. Zöld jelzés: Szabad út, áthaladás
-    state = set_signal(red=False, yellow=False, green=True, duration=green_sec)
+    state = set_signal(red=False, yellow=False, green=True, duration=green_sec)  # [TAG:GREEN]
     # 4. Sárga jelzés: Figyelem, felkészülés a megállásra
-    state = set_signal(red=False, yellow=True, green=False, duration=yellow_sec)
+    state = set_signal(red=False, yellow=True, green=False, duration=yellow_sec)  # [TAG:YELLOW]
 
-state = "COMPLETED"
+state = "COMPLETED"  # [TAG:COMPLETE]
 """,
     "C++": """// Oktatási Jelzőlámpa Szimuláció (Phase 1)
 #include <iostream>
-std::string state = "INIT";
+std::string state = "INIT";  // [TAG:INIT]
 
-for (int cycle = 1; cycle <= totalCycles; ++cycle) {
+for (int cycle = 1; cycle <= totalCycles; ++cycle) {  // [TAG:LOOP_START]
     // 1. Piros jelzés: Megállás!
-    state = setSignal(true, false, false, redSec);
+    state = setSignal(true, false, false, redSec);  // [TAG:RED]
     // 2. Piros-sárga jelzés: Felkészülés az indulásra
-    state = setSignal(true, true, false, rySec);
+    state = setSignal(true, true, false, rySec);  // [TAG:RED_YELLOW]
     // 3. Zöld jelzés: Szabad út, áthaladás
-    state = setSignal(false, false, true, greenSec);
+    state = setSignal(false, false, true, greenSec);  // [TAG:GREEN]
     // 4. Sárga jelzés: Figyelem, megállás előkészítése
-    state = setSignal(false, true, false, yellowSec);
+    state = setSignal(false, true, false, yellowSec);  // [TAG:YELLOW]
 }
-state = "COMPLETED";
+state = "COMPLETED";  // [TAG:COMPLETE]
 """,
     "C": """/* Oktatási Jelzőlámpa Szimuláció (Phase 1) */
 #include <stdio.h>
 int cycle;
-const char* state = "INIT";
+const char* state = "INIT";  /* [TAG:INIT] */
 
-for (cycle = 1; cycle <= total_cycles; cycle++) {
+for (cycle = 1; cycle <= total_cycles; cycle++) {  /* [TAG:LOOP_START] */
     /* 1. Piros jelzés: Megállás */
-    state = set_signal(1, 0, 0, red_sec);
+    state = set_signal(1, 0, 0, red_sec);  /* [TAG:RED] */
     /* 2. Piros-sárga jelzés: Felkészülés */
-    state = set_signal(1, 1, 0, ry_sec);
+    state = set_signal(1, 1, 0, ry_sec);  /* [TAG:RED_YELLOW] */
     /* 3. Zöld jelzés: Áthaladás */
-    state = set_signal(0, 0, 1, green_sec);
+    state = set_signal(0, 0, 1, green_sec);  /* [TAG:GREEN] */
     /* 4. Sárga jelzés: Figyelem */
-    state = set_signal(0, 1, 0, yellow_sec);
+    state = set_signal(0, 1, 0, yellow_sec);  /* [TAG:YELLOW] */
 }
-state = "COMPLETED";
+state = "COMPLETED";  /* [TAG:COMPLETE] */
 """,
     "BASIC": """' Oktatási Jelzőlámpa Szimuláció (Phase 1)
-STATE$ = "INIT"
+STATE$ = "INIT"  ' [TAG:INIT]
 
-FOR CYCLE = 1 TO TOTALCYCLES
+FOR CYCLE = 1 TO TOTALCYCLES  ' [TAG:LOOP_START]
     ' 1. Piros jelzés: Megállás!
-    CALL SetSignal(1, 0, 0, RedSec)
+    CALL SetSignal(1, 0, 0, RedSec)  ' [TAG:RED]
     ' 2. Piros-sárga: Felkészülés
-    CALL SetSignal(1, 1, 0, RySec)
+    CALL SetSignal(1, 1, 0, RySec)  ' [TAG:RED_YELLOW]
     ' 3. Zöld jelzés: Szabad út
-    CALL SetSignal(0, 0, 1, GreenSec)
+    CALL SetSignal(0, 0, 1, GreenSec)  ' [TAG:GREEN]
     ' 4. Sárga jelzés: Figyelem
-    CALL SetSignal(0, 1, 0, YellowSec)
+    CALL SetSignal(0, 1, 0, YellowSec)  ' [TAG:YELLOW]
 NEXT CYCLE
-STATE$ = "COMPLETED"
+STATE$ = "COMPLETED"  ' [TAG:COMPLETE]
 """,
     "Java": """// Oktatási Jelzőlámpa Szimuláció (Phase 1)
 public class TrafficLight {
     public void runSimulation(int totalCycles) {
-        String state = "INIT";
+        String state = "INIT";  // [TAG:INIT]
 
-        for (int cycle = 1; cycle <= totalCycles; cycle++) {
+        for (int cycle = 1; cycle <= totalCycles; cycle++) {  // [TAG:LOOP_START]
             // 1. Piros jelzés: Megállás!
-            state = setSignal(true, false, false, redSec);
+            state = setSignal(true, false, false, redSec);  // [TAG:RED]
             // 2. Piros-sárga jelzés: Felkészülés
-            state = setSignal(true, true, false, rySec);
+            state = setSignal(true, true, false, rySec);  // [TAG:RED_YELLOW]
             // 3. Zöld jelzés: Szabad út
-            state = setSignal(false, false, true, greenSec);
+            state = setSignal(false, false, true, greenSec);  // [TAG:GREEN]
             // 4. Sárga jelzés: Figyelem
-            state = setSignal(false, true, false, yellowSec);
+            state = setSignal(false, true, false, yellowSec);  // [TAG:YELLOW]
         }
-        state = "COMPLETED";
+        state = "COMPLETED";  // [TAG:COMPLETE]
     }
 }
 """,
@@ -155,22 +101,51 @@ var
   cycle: Integer;
   state: String;
 begin
-  state := 'INIT';
-  for cycle := 1 to totalCycles do
+  state := 'INIT';  // [TAG:INIT]
+  for cycle := 1 to totalCycles do  // [TAG:LOOP_START]
   begin
     // 1. Piros jelzés: Megállás!
-    state := SetSignal(True, False, False, redSec);
+    state := SetSignal(True, False, False, redSec);  // [TAG:RED]
     // 2. Piros-sárga: Felkészülés
-    state := SetSignal(True, True, False, rySec);
+    state := SetSignal(True, True, False, rySec);  // [TAG:RED_YELLOW]
     // 3. Zöld jelzés: Szabad út
-    state := SetSignal(False, False, True, greenSec);
+    state := SetSignal(False, False, True, greenSec);  // [TAG:GREEN]
     // 4. Sárga jelzés: Figyelem
-    state := SetSignal(False, True, False, yellowSec);
+    state := SetSignal(False, True, False, yellowSec);  // [TAG:YELLOW]
   end;
-  state := 'COMPLETED';
+  state := 'COMPLETED';  // [TAG:COMPLETE]
 end.
 """,
 }
+
+# Tisztított kódok és automatikusan levezetett 1-based sor-szótárak
+CLEAN_CODE_TEMPLATES: Dict[str, str] = {}
+DERIVED_TAG_LINES: Dict[str, Dict[str, int]] = {}
+
+TAG_PATTERN = re.compile(
+    r"""(?:\s*(?:#|//|'|/\*)\s*\[TAG:([A-Za-z0-9_]+)\]\s*(?:\*/)?|\s*\[TAG:([A-Za-z0-9_]+)\])"""
+)
+
+
+def _process_templates():
+    for lang, raw_code in RAW_CODE_TEMPLATES.items():
+        clean_lines: List[str] = []
+        tag_map: Dict[str, int] = {}
+        for line_idx, line in enumerate(raw_code.splitlines(), start=1):
+            match = TAG_PATTERN.search(line)
+            if match:
+                tag = match.group(1) or match.group(2)
+                tag_map[tag] = line_idx
+                # Eltávolítjuk az inline marker tag-et a tiszta megjelenítéshez
+                clean_line = TAG_PATTERN.sub("", line).rstrip()
+                clean_lines.append(clean_line)
+            else:
+                clean_lines.append(line)
+        CLEAN_CODE_TEMPLATES[lang] = "\n".join(clean_lines) + ("\n" if raw_code.endswith("\n") else "")
+        DERIVED_TAG_LINES[lang] = tag_map
+
+
+_process_templates()
 
 
 class TrafficLightPlugin(AlgorithmPluginBase):
@@ -219,14 +194,14 @@ class TrafficLightPlugin(AlgorithmPluginBase):
         self.params.set(pid, val)
 
     def get_code(self, language: str) -> str:
-        return CODE_TEMPLATES.get(language, CODE_TEMPLATES["Python"])
+        return CLEAN_CODE_TEMPLATES.get(language, CLEAN_CODE_TEMPLATES["Python"])
 
     def get_supported_languages(self) -> List[str]:
         return ["Python", "C++", "C", "BASIC", "Java", "Pascal"]
 
     @classmethod
     def get_line_for_tag(cls, language: str, tag: str) -> int:
-        lang_tags = LOGICAL_TAG_LINES.get(language, LOGICAL_TAG_LINES["Python"])
+        lang_tags = DERIVED_TAG_LINES.get(language, DERIVED_TAG_LINES.get("Python", {}))
         return lang_tags.get(tag, 1)
 
     def create_visualizer(self):
@@ -254,7 +229,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
         # Initial step
         yield VisualizationStep(
             explanation="🚦 Jelzőlámpa rendszer inicializálva. Készen áll a ciklus indítására.",
-            code_line=LOGICAL_TAG_LINES["Python"]["INIT"],
+            code_line=self.get_line_for_tag("Python", "INIT"),
             metrics={"comparisons": 0, "pass_num": 0, "remaining_time": 0, "cycle": 0},
             array=[0, 0, 0],
             key="INIT",
@@ -285,7 +260,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
             # Loop header step
             yield VisualizationStep(
                 explanation=f"🔄 {cycle_idx}. ciklus kezdete ({cycle_idx}/{total_cycles}). Ciklusfej kiértékelése.",
-                code_line=LOGICAL_TAG_LINES["Python"]["LOOP_START"],
+                code_line=self.get_line_for_tag("Python", "LOOP_START"),
                 metrics={"comparisons": cycle_idx, "pass_num": cycle_idx, "remaining_time": 0, "cycle": cycle_idx},
                 array=[int(cycle_idx), int(total_cycles)],
                 key=f"Ciklus {cycle_idx}",
@@ -310,7 +285,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
 
                     yield VisualizationStep(
                         explanation=explanation,
-                        code_line=LOGICAL_TAG_LINES["Python"][tag],
+                        code_line=self.get_line_for_tag("Python", tag),
                         metrics={
                             "comparisons": total_step_counter,
                             "pass_num": cycle_idx,
@@ -337,7 +312,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
         # Completed step
         yield VisualizationStep(
             explanation=f"✅ Jelzőlámpa szimuláció befejeződött: {total_cycles} ciklus sikeresen lefutott.",
-            code_line=LOGICAL_TAG_LINES["Python"]["COMPLETE"],
+            code_line=self.get_line_for_tag("Python", "COMPLETE"),
             metrics={"comparisons": total_step_counter, "pass_num": total_cycles, "remaining_time": 0, "cycle": total_cycles},
             array=[0, 0, 0],
             key="KÉSZ",

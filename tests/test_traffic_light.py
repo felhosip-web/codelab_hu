@@ -6,7 +6,7 @@ import unittest
 from core.plugin_system import PluginLoader
 from core.engine import Engine
 from core.step import VisualizationStep
-from plugins.traffic_light.plugin import TrafficLightPlugin, CODE_TEMPLATES, LOGICAL_TAG_LINES
+from plugins.traffic_light.plugin import TrafficLightPlugin, CLEAN_CODE_TEMPLATES, DERIVED_TAG_LINES
 
 
 class TestTrafficLightPlugin(unittest.TestCase):
@@ -27,6 +27,8 @@ class TestTrafficLightPlugin(unittest.TestCase):
             code = self.plugin.get_code(lang)
             self.assertIsInstance(code, str)
             self.assertGreater(len(code), 20)
+            # Ensure marker tags are cleanly stripped from user-displayed code
+            self.assertNotIn("[TAG:", code)
 
     def test_logical_tag_lines_in_all_languages(self):
         langs = ["Python", "C++", "C", "BASIC", "Java", "Pascal"]
@@ -53,6 +55,30 @@ class TestTrafficLightPlugin(unittest.TestCase):
                     has_token,
                     f"Line {line_no} in {lang} ('{actual_line}') does not match expected tokens for tag {tag}"
                 )
+
+    def test_pascal_offset_exact_lines(self):
+        # Pascal has declarations before begin; verify exact executable statement lines
+        clean_pascal = self.plugin.get_code("Pascal").splitlines()
+        self.assertEqual(self.plugin.get_line_for_tag("Pascal", "INIT"), 7)
+        self.assertIn("state := 'INIT';", clean_pascal[6])
+
+        self.assertEqual(self.plugin.get_line_for_tag("Pascal", "LOOP_START"), 8)
+        self.assertIn("for cycle := 1 to totalCycles do", clean_pascal[7])
+
+        self.assertEqual(self.plugin.get_line_for_tag("Pascal", "RED"), 11)
+        self.assertIn("SetSignal(True, False, False, redSec)", clean_pascal[10])
+
+        self.assertEqual(self.plugin.get_line_for_tag("Pascal", "RED_YELLOW"), 13)
+        self.assertIn("SetSignal(True, True, False, rySec)", clean_pascal[12])
+
+        self.assertEqual(self.plugin.get_line_for_tag("Pascal", "GREEN"), 15)
+        self.assertIn("SetSignal(False, False, True, greenSec)", clean_pascal[14])
+
+        self.assertEqual(self.plugin.get_line_for_tag("Pascal", "YELLOW"), 17)
+        self.assertIn("SetSignal(False, True, False, yellowSec)", clean_pascal[16])
+
+        self.assertEqual(self.plugin.get_line_for_tag("Pascal", "COMPLETE"), 19)
+        self.assertIn("state := 'COMPLETED';", clean_pascal[18])
 
     def test_initial_step(self):
         steps = list(self.plugin.get_steps())
@@ -283,9 +309,96 @@ class TestTrafficLightGUI(unittest.TestCase):
         win.next_step()
         self.app.processEvents()
 
-        # Switch language mid-simulation and test line update
+        win.close()
+        win.deleteLater()
+
+    def test_language_aware_line_resolution_and_breakpoints(self):
+        from ui.main_window import MainWindow
+        win = MainWindow()
+        win.show()
+        self.app.processEvents()
+
+        plugin = win.plugin_loader.get_plugin("traffic_light")
+        self.assertIsNotNone(plugin)
+        win.current_plugin = plugin
+        win.update_active_visualizer()
+        win.reset()
+
+        win.breakpoint_manager.clear_all()
+
+        # Move to RED phase step (index 2)
+        win.next_step()  # step 1: CYCLE_START
+        win.next_step()  # step 2: RED (remaining 3)
+        current_step = win.steps[win.current_step_idx]
+        self.assertEqual(current_step.extra.get("tag"), "RED")
+
+        # Test line resolution across multiple languages
+        expected_red_lines = {
+            "Python": 6,
+            "C++": 7,
+            "C": 8,
+            "BASIC": 6,
+            "Java": 8,
+            "Pascal": 11,
+        }
+
+        for lang, expected_line in expected_red_lines.items():
+            resolved = win.resolve_step_code_line(current_step, lang)
+            self.assertEqual(
+                resolved,
+                expected_line,
+                f"Resolved line for {lang} RED tag expected {expected_line}, got {resolved}"
+            )
+
+        # Test breakpoint toggle in current language (C++)
+        win.lang_combo.setCurrentText("C++")
+        win.on_language_changed("C++")
+        self.app.processEvents()
+
+        # Toggle breakpoint via MainWindow
+        win.on_toggle_breakpoint()
+        # Verify breakpoint is registered at line 7 for traffic_light
+        enabled_lines = win.breakpoint_manager.get_enabled_lines("traffic_light")
+        self.assertIn(7, enabled_lines)
+
+        # Switch language to Pascal mid-simulation
+        win.lang_combo.setCurrentText("Pascal")
         win.on_language_changed("Pascal")
         self.app.processEvents()
+
+        # In Pascal, RED is at line 11. Toggle breakpoint
+        win.on_toggle_breakpoint()
+        enabled_lines = win.breakpoint_manager.get_enabled_lines("traffic_light")
+        self.assertIn(11, enabled_lines)
+
+        win.close()
+        win.deleteLater()
+
+    def test_legacy_plugin_backward_compatibility(self):
+        from ui.main_window import MainWindow
+        win = MainWindow()
+        win.show()
+        self.app.processEvents()
+
+        # Select bubble sort (legacy plugin)
+        plugin = win.plugin_loader.get_plugin("bubble_sort")
+        self.assertIsNotNone(plugin)
+        win.current_plugin = plugin
+        win.update_active_visualizer()
+        win.reset()
+        self.app.processEvents()
+
+        # Active visualizer must remain ArrayViewerWidget
+        from ui.widgets import ArrayViewerWidget
+        self.assertIsInstance(win.viz_stack.currentWidget(), ArrayViewerWidget)
+
+        # Advance step
+        win.next_step()
+        self.app.processEvents()
+
+        step = win.steps[win.current_step_idx]
+        resolved = win.resolve_step_code_line(step, "Python")
+        self.assertEqual(resolved, getattr(step, 'code_line', getattr(step, 'line', 0)))
 
         win.close()
         win.deleteLater()
