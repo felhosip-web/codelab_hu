@@ -33,6 +33,27 @@ class TestTrafficLightPlugin(unittest.TestCase):
     def test_logical_tag_lines_in_all_languages(self):
         langs = ["Python", "C++", "C", "BASIC", "Java", "Pascal"]
         required_tags = ["INIT", "LOOP_START", "RED", "RED_YELLOW", "GREEN", "YELLOW", "COMPLETE"]
+
+        # Exact expected Python statements
+        exact_python_statements = {
+            "INIT": 'state = "INIT"',
+            "LOOP_START": "for cycle in range(1, total_cycles + 1):",
+            "RED": "state = set_signal(red=True, yellow=False, green=False, duration=red_sec)",
+            "RED_YELLOW": "state = set_signal(red=True, yellow=True, green=False, duration=ry_sec)",
+            "GREEN": "state = set_signal(red=False, yellow=False, green=True, duration=green_sec)",
+            "YELLOW": "state = set_signal(red=False, yellow=True, green=False, duration=yellow_sec)",
+            "COMPLETE": 'state = "COMPLETED"',
+        }
+
+        python_lines = self.plugin.get_code("Python").splitlines()
+        for tag, expected_stmt in exact_python_statements.items():
+            line_no = self.plugin.get_line_for_tag("Python", tag)
+            self.assertEqual(
+                python_lines[line_no - 1].strip(),
+                expected_stmt,
+                f"Python exact statement mismatch for {tag} at line {line_no}"
+            )
+
         tag_expected_tokens = {
             "INIT": ["INIT"],
             "LOOP_START": ["for", "FOR", "cycle", "CYCLE"],
@@ -175,6 +196,73 @@ class TestTrafficLightPlugin(unittest.TestCase):
         self.assertEqual(engine.step_idx, 1)
         self.assertEqual(prev.extra.get("state"), "CYCLE_START")
 
+    def test_final_cycle_yellow_next_state_and_loop_start_lamps(self):
+        self.plugin.set_param("red_duration", 1)
+        self.plugin.set_param("red_yellow_duration", 1)
+        self.plugin.set_param("green_duration", 1)
+        self.plugin.set_param("yellow_duration", 1)
+        self.plugin.set_param("cycles", 2)
+
+        steps = list(self.plugin.get_steps())
+
+        # Cycle 1 LOOP_START lamps must be off
+        cycle1_loop = steps[1]
+        self.assertEqual(cycle1_loop.extra.get("tag"), "LOOP_START")
+        self.assertEqual(cycle1_loop.extra.get("lamps"), {"red": False, "yellow": False, "green": False})
+
+        # Cycle 2 LOOP_START lamps must preserve preceding YELLOW lamps
+        # Step indices:
+        # 0: INIT
+        # 1: Cycle 1 LOOP_START
+        # 2: Cycle 1 RED
+        # 3: Cycle 1 RED_YELLOW
+        # 4: Cycle 1 GREEN
+        # 5: Cycle 1 YELLOW (next_state="RED")
+        # 6: Cycle 2 LOOP_START
+        cycle1_yellow = steps[5]
+        self.assertEqual(cycle1_yellow.extra.get("state"), "YELLOW")
+        self.assertEqual(cycle1_yellow.extra.get("next_state"), "RED")
+
+        cycle2_loop = steps[6]
+        self.assertEqual(cycle2_loop.extra.get("tag"), "LOOP_START")
+        self.assertEqual(cycle2_loop.extra.get("lamps"), {"red": False, "yellow": True, "green": False})
+
+        # Final cycle's YELLOW step must have next_state = None
+        # 7: Cycle 2 RED
+        # 8: Cycle 2 RED_YELLOW
+        # 9: Cycle 2 GREEN
+        # 10: Cycle 2 YELLOW (next_state=None)
+        # 11: COMPLETE
+        cycle2_yellow = steps[10]
+        self.assertEqual(cycle2_yellow.extra.get("state"), "YELLOW")
+        self.assertIsNone(cycle2_yellow.extra.get("next_state"))
+
+    def test_state_manager_restore_timing_parameters(self):
+        self.plugin.set_param("red_duration", 5)
+        self.plugin.set_param("cycles", 3)
+
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        # Save state
+        saved_path = engine.save_current("Test save timing")
+
+        # Mutate plugin params
+        self.plugin.set_param("red_duration", 1)
+        self.plugin.set_param("cycles", 1)
+        self.assertEqual(self.plugin.params.get("red_duration"), 1)
+
+        # Load state back
+        engine.load_state(saved_path)
+
+        # Verify restored params
+        self.assertEqual(self.plugin.params.get("red_duration"), 5)
+        self.assertEqual(self.plugin.params.get("cycles"), 3)
+
+        if saved_path.exists():
+            saved_path.unlink()
+
     def test_plugin_loader_discovery_and_category(self):
         loader = PluginLoader()
         loader.load_all()
@@ -305,9 +393,27 @@ class TestTrafficLightGUI(unittest.TestCase):
         from ui.traffic_light_widget import TrafficLightViewerWidget
         self.assertIsInstance(active_viz, TrafficLightViewerWidget)
 
-        # Advance step
+        # Advance step (from 0 INIT to 1 LOOP_START)
         win.next_step()
         self.app.processEvents()
+
+        # Explicitly verify switching to Pascal highlights line 8 (LOOP_START)
+        win.lang_combo.setCurrentText("Pascal")
+        win.on_language_changed("Pascal")
+        self.app.processEvents()
+
+        current_step = win.steps[win.current_step_idx]
+        resolved_pascal_line = win.resolve_step_code_line(current_step, "Pascal")
+        self.assertEqual(resolved_pascal_line, 8)
+
+        # Check visualizer cache cleanup on reload (mocking QMessageBox to prevent modal block)
+        self.assertIn("traffic_light", win.plugin_visualizers)
+        from unittest.mock import patch
+        with patch("ui.main_window.QMessageBox.information"), patch("ui.main_window.QMessageBox.warning"):
+            with patch.object(win, 'refresh_plugin_list'):
+                win.on_reload_plugins()
+                self.app.processEvents()
+                self.assertEqual(len(win.plugin_visualizers), 0)
 
         win.close()
         win.deleteLater()
@@ -355,21 +461,23 @@ class TestTrafficLightGUI(unittest.TestCase):
         win.on_language_changed("C++")
         self.app.processEvents()
 
-        # Toggle breakpoint via MainWindow
+        # Toggle breakpoint via MainWindow:
+        # Requirement 8: "Correct breakpoint status messages to display the selected language's source line. Keep the canonical stored 'code_line' unchanged for breakpoint matching."
         win.on_toggle_breakpoint()
-        # Verify breakpoint is registered at line 7 for traffic_light
+        # Canonical stored line for RED tag is 6 (Python base)
         enabled_lines = win.breakpoint_manager.get_enabled_lines("traffic_light")
-        self.assertIn(7, enabled_lines)
+        self.assertIn(6, enabled_lines)
+        # But status message must show C++ resolved line 7
+        self.assertIn("7. sornál bekapcsolva", win.explanation_label.text())
 
         # Switch language to Pascal mid-simulation
         win.lang_combo.setCurrentText("Pascal")
         win.on_language_changed("Pascal")
         self.app.processEvents()
 
-        # In Pascal, RED is at line 11. Toggle breakpoint
+        # Toggle breakpoint off: status message must show Pascal resolved line 11
         win.on_toggle_breakpoint()
-        enabled_lines = win.breakpoint_manager.get_enabled_lines("traffic_light")
-        self.assertIn(11, enabled_lines)
+        self.assertIn("11. sornál kikapcsolva", win.explanation_label.text())
 
         win.close()
         win.deleteLater()

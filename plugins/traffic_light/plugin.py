@@ -247,17 +247,13 @@ class TrafficLightPlugin(AlgorithmPluginBase):
             }
         )
 
-        phases = [
-            (self.STATE_RED, "RED", {"red": True, "yellow": False, "green": False}, red_sec, "⛔ PIROS jelzés: Megállás! A járműforgalom várakozik.", self.STATE_RED_YELLOW),
-            (self.STATE_RED_YELLOW, "RED_YELLOW", {"red": True, "yellow": True, "green": False}, ry_sec, "⚠️ PIROS-SÁRGA jelzés: Felkészülés az indulásra! A motor felpörgethető, de még tilos behajtani.", self.STATE_GREEN),
-            (self.STATE_GREEN, "GREEN", {"red": False, "yellow": False, "green": True}, green_sec, "🟢 ZÖLD jelzés: Szabad az út! A járművek áthaladhatnak a kereszteződésen.", self.STATE_YELLOW),
-            (self.STATE_YELLOW, "YELLOW", {"red": False, "yellow": True, "green": False}, yellow_sec, "🟡 SÁRGA jelzés: Figyelem! A kereszteződés kiürítése, megállás a vonal előtt.", self.STATE_RED),
-        ]
-
         total_step_counter = 0
+        last_lamp_state = {"red": False, "yellow": False, "green": False}
 
         for cycle_idx in range(1, total_cycles + 1):
-            # Loop header step
+            # Ciklusfej kiértékelése: első ciklusban init lámpaállapot, továbbiakban az előző fázis lámpái
+            loop_lamps = dict(last_lamp_state) if cycle_idx > 1 else {"red": False, "yellow": False, "green": False}
+
             yield VisualizationStep(
                 explanation=f"🔄 {cycle_idx}. ciklus kezdete ({cycle_idx}/{total_cycles}). Ciklusfej kiértékelése.",
                 code_line=self.get_line_for_tag("Python", "LOOP_START"),
@@ -268,7 +264,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
                     "tag": "LOOP_START",
                     "state": "CYCLE_START",
                     "state_hu": f"{cycle_idx}. Ciklus",
-                    "lamps": {"red": False, "yellow": False, "green": False},
+                    "lamps": loop_lamps,
                     "remaining_time": 0,
                     "duration": 0,
                     "cycle": cycle_idx,
@@ -277,7 +273,17 @@ class TrafficLightPlugin(AlgorithmPluginBase):
                 }
             )
 
+            # A 4 állapot fázis: ha ez az utolsó ciklus, a YELLOW után már nincs következő lámpaállapot (None)
+            yellow_next = None if cycle_idx == total_cycles else self.STATE_RED
+            phases = [
+                (self.STATE_RED, "RED", {"red": True, "yellow": False, "green": False}, red_sec, "⛔ PIROS jelzés: Megállás! A járműforgalom várakozik.", self.STATE_RED_YELLOW),
+                (self.STATE_RED_YELLOW, "RED_YELLOW", {"red": True, "yellow": True, "green": False}, ry_sec, "⚠️ PIROS-SÁRGA jelzés: Felkészülés az indulásra! A motor felpörgethető, de még tilos behajtani.", self.STATE_GREEN),
+                (self.STATE_GREEN, "GREEN", {"red": False, "yellow": False, "green": True}, green_sec, "🟢 ZÖLD jelzés: Szabad az út! A járművek áthaladhatnak a kereszteződésen.", self.STATE_YELLOW),
+                (self.STATE_YELLOW, "YELLOW", {"red": False, "yellow": True, "green": False}, yellow_sec, "🟡 SÁRGA jelzés: Figyelem! A kereszteződés kiürítése, megállás a vonal előtt.", yellow_next),
+            ]
+
             for state_code, tag, lamps, duration, desc_base, next_state in phases:
+                last_lamp_state = dict(lamps)
                 for rem in range(duration, 0, -1):
                     total_step_counter += 1
                     explanation = f"{desc_base} Hátralévő idő: {rem} mp."

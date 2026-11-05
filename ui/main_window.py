@@ -537,6 +537,7 @@ class MainWindow(QMainWindow):
                 self.update_input_panel_state()
         else:
             self.current_plugin = None
+            self.update_active_visualizer()
             self.update_plugin_info()
             self.reset()
 
@@ -712,6 +713,13 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def on_reload_plugins(self):
+        # Eltávolítjuk és felszabadítjuk a gyorsítótárazott egyedi vizualizációs widgeteket
+        if hasattr(self, 'plugin_visualizers') and hasattr(self, 'viz_stack'):
+            for widget in list(self.plugin_visualizers.values()):
+                self.viz_stack.removeWidget(widget)
+                widget.deleteLater()
+            self.plugin_visualizers.clear()
+
         loaded_ids, errors = self.plugin_loader.reload()
         self.refresh_plugin_list()
         if errors:
@@ -755,12 +763,14 @@ class MainWindow(QMainWindow):
         if not self.current_plugin or not self.steps or self.current_step_idx >= len(self.steps):
             return
         step = self.steps[self.current_step_idx]
-        line = self.resolve_step_code_line(step)
-        if line:
+        display_line = self.resolve_step_code_line(step)
+        canonical_line = getattr(step, 'code_line', getattr(step, 'line', None))
+        if canonical_line is not None:
             plugin_id = getattr(self.current_plugin, 'id', '')
-            enabled = self.breakpoint_manager.toggle_breakpoint(plugin_id, line)
+            enabled = self.breakpoint_manager.toggle_breakpoint(plugin_id, canonical_line)
             status = "bekapcsolva" if enabled else "kikapcsolva"
-            self.explanation_label.setText(f"🛑 Töréspont {line}. sornál {status} ({plugin_id}).")
+            shown_line = display_line if display_line else canonical_line
+            self.explanation_label.setText(f"🛑 Töréspont {shown_line}. sornál {status} ({plugin_id}).")
 
     def show_step(self, step):
         arr = getattr(step, 'array', None)
