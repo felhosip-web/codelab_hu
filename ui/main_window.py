@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSlider,
     QSplitter,
+    QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -36,6 +37,7 @@ CATEGORY_NAMES = {
     "crc": "🛡️ CRC & Hibaellenőrzés",
     "fourier": "🌊 Fourier transzformáció",
     "program_structure": "⚙️ Programstruktúrák",
+    "simulation": "🚦 Szimuláció",
     "general": "🧩 Egyéb",
 }
 
@@ -227,8 +229,11 @@ class MainWindow(QMainWindow):
         self.stats_bar = StatsBar()
         viz_layout.addWidget(self.stats_bar)
 
+        self.viz_stack = QStackedWidget()
         self.array_viewer = ArrayViewerWidget(self.current_array)
-        viz_layout.addWidget(self.array_viewer)
+        self.viz_stack.addWidget(self.array_viewer)
+        self.plugin_visualizers = {}
+        viz_layout.addWidget(self.viz_stack)
 
         self.explanation_label = QLabel("Készen áll a rendezésre. Nyomj Lejátszást!")
         self.explanation_label.setStyleSheet(
@@ -345,6 +350,14 @@ class MainWindow(QMainWindow):
         code = self.current_plugin.get_code(lang)
         self.code_viewer.set_code(code, lang)
         self.code_viewer.set_title(f"{self.current_plugin.id}.cpp - {lang}")
+        if self.steps and 0 <= self.current_step_idx < len(self.steps):
+            step = self.steps[self.current_step_idx]
+            code_line = getattr(step, 'code_line', getattr(step, 'line', 0))
+            if hasattr(self.current_plugin, 'get_line_for_tag') and hasattr(step, 'extra'):
+                tag = step.extra.get('tag')
+                if tag:
+                    code_line = self.current_plugin.get_line_for_tag(lang, tag)
+            self.code_viewer.highlight_line(code_line)
 
     def is_array_based_plugin(self) -> bool:
         if not self.current_plugin:
@@ -388,6 +401,22 @@ class MainWindow(QMainWindow):
             self.input_edit.setText(", ".join(map(str, arr)))
             self.on_apply_input()
 
+    def update_active_visualizer(self):
+        if not hasattr(self, 'viz_stack'):
+            return
+        if self.current_plugin and hasattr(self.current_plugin, 'create_visualizer'):
+            p_id = self.current_plugin.id
+            if p_id not in self.plugin_visualizers:
+                custom_widget = self.current_plugin.create_visualizer()
+                if custom_widget is not None:
+                    self.plugin_visualizers[p_id] = custom_widget
+                    self.viz_stack.addWidget(custom_widget)
+            widget = self.plugin_visualizers.get(p_id)
+            if widget is not None:
+                self.viz_stack.setCurrentWidget(widget)
+                return
+        self.viz_stack.setCurrentWidget(self.array_viewer)
+
     def on_algo_tree_changed(self, current, previous):
         if not current or current.parent() is None:
             return
@@ -398,6 +427,7 @@ class MainWindow(QMainWindow):
         if not plugin or plugin == self.current_plugin:
             return
         self.current_plugin = plugin
+        self.update_active_visualizer()
         self.on_language_changed(self.lang_combo.currentText())
         self.update_plugin_info()
         self.update_input_panel_state()
@@ -407,6 +437,7 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.plugins_list):
             return
         self.current_plugin = self.plugins_list[row]
+        self.update_active_visualizer()
         self.on_language_changed(self.lang_combo.currentText())
         self.update_plugin_info()
         self.update_input_panel_state()
@@ -486,6 +517,7 @@ class MainWindow(QMainWindow):
             p_id = item_to_select.data(0, Qt.UserRole)
             self.current_plugin = self.plugin_loader.get_plugin(p_id)
             if self.current_plugin:
+                self.update_active_visualizer()
                 self.on_language_changed(self.lang_combo.currentText())
                 self.update_plugin_info()
                 self.update_input_panel_state()
@@ -724,7 +756,21 @@ class MainWindow(QMainWindow):
         code_line = getattr(step, 'code_line', getattr(step, 'line', 0))
         explanation = getattr(step, 'explanation', '')
 
+        if self.current_plugin and hasattr(self.current_plugin, 'get_line_for_tag') and hasattr(step, 'extra'):
+            tag = step.extra.get('tag')
+            if tag:
+                current_lang = self.lang_combo.currentText()
+                code_line = self.current_plugin.get_line_for_tag(current_lang, tag)
+
         self.array_viewer.update_state(arr, key, sorted_end, highlight)
+        if hasattr(self, 'viz_stack'):
+            active_widget = self.viz_stack.currentWidget()
+            if active_widget and active_widget != self.array_viewer and hasattr(active_widget, 'update_state'):
+                try:
+                    active_widget.update_state(step)
+                except Exception as e:
+                    print(f"[MainWindow] Error updating custom visualizer: {e}")
+
         self.code_viewer.highlight_line(code_line)
 
         pass_num = getattr(step, 'pass_num', 0)
