@@ -127,10 +127,29 @@ class PluginLoader:
         self.plugin_folders: Dict[str, str] = {}
         self.api_manager = api_manager
         self.errors: List[str] = []
+        self._folder_errors: Dict[str, List[str]] = {}
 
     @property
     def failed_plugins(self) -> List[Dict[str, str]]:
         return [{"folder": "load_error", "reason": e} for e in self.errors]
+
+    def _sync_errors_from_folder_map(self):
+        """Szinkronizálja a self.errors listát a _folder_errors szótárból."""
+        self.errors = [err for errs in self._folder_errors.values() for err in errs]
+
+    def _clear_errors_for_folders(self, folders: set):
+        """Eltávolítja a megadott mappákhoz tartozó hibákat."""
+        for folder in folders:
+            self._folder_errors.pop(folder, None)
+        self._sync_errors_from_folder_map()
+
+    def _record_folder_errors(self, folder_name: str, errors: List[str]):
+        """Rögzíti az adott mappához tartozó új hibákat."""
+        if errors:
+            self._folder_errors[folder_name] = list(errors)
+        else:
+            self._folder_errors.pop(folder_name, None)
+        self._sync_errors_from_folder_map()
 
     def _get_feature_name(self, plugin: AlgorithmPluginBase, folder_name: str = "") -> str:
         ptype = getattr(plugin, "plugin_type", getattr(plugin, "type", "")).strip().lower()
@@ -174,18 +193,40 @@ class PluginLoader:
         # 4. Default fallback
         return "general"
 
-    def _load_plugin_folder(self, plugin_folder: pathlib.Path, registered_ids: set) -> None:
+    def _load_plugin_folder(
+        self,
+        plugin_folder: pathlib.Path,
+        registered_ids: set,
+        target_plugins: Dict[str, AlgorithmPluginBase] = None,
+        target_features: Dict[str, str] = None,
+        target_folders: Dict[str, str] = None,
+    ) -> List[str]:
         """
-        Betölt egy adott plugin könyvtárat, importálja a plugin.py fájlt,
-        és regisztrálja a benne található érvényes algoritmus plugin osztályokat.
+        Loads and validates all plugin classes from a specific plugin folder.
+        Registers successfully loaded plugins into target dictionaries (defaulting to self.plugins).
+        Returns a list of error messages encountered during loading.
         """
-        if not plugin_folder.is_dir():
-            return
+        errors: List[str] = []
+        if target_plugins is None:
+            target_plugins = self.plugins
+        if target_features is None:
+            target_features = self.plugin_features
+        if target_folders is None:
+            target_folders = self.plugin_folders
+
+        if not plugin_folder.is_dir() or plugin_folder.name.startswith((".", "__")):
+            return errors
         plugin_file = plugin_folder / "plugin.py"
         if not plugin_file.exists():
-            return
+            err_msg = f"[PluginLoader] plugin.py nem található: {plugin_folder.name}"
+            errors.append(err_msg)
+            print(err_msg)
+            return errors
 
         module_name = f"plugins.{plugin_folder.name}.plugin"
+        had_prev_module = module_name in sys.modules
+        prev_module = sys.modules.get(module_name)
+
         try:
             if module_name in sys.modules:
                 del sys.modules[module_name]
@@ -195,9 +236,13 @@ class PluginLoader:
             )
             if spec is None or spec.loader is None:
                 err_msg = f"[PluginLoader] Spec nem tölthető be: {plugin_folder.name}"
-                self.errors.append(err_msg)
+                errors.append(err_msg)
                 print(err_msg)
-                return
+                if had_prev_module:
+                    sys.modules[module_name] = prev_module
+                elif module_name in sys.modules:
+                    del sys.modules[module_name]
+                return errors
 
             module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = module
@@ -219,63 +264,95 @@ class PluginLoader:
                         instance = attr()
                     except Exception as inst_err:
                         err_msg = f"[PluginLoader] Példányosítási hiba ({plugin_folder.name}/{attr_name}): {inst_err}"
-                        self.errors.append(err_msg)
+                        errors.append(err_msg)
                         print(err_msg)
                         continue
 
                     plugin_id = getattr(instance, "id", "")
                     if plugin_id is None or not str(plugin_id).strip():
                         err_msg = f"[PluginLoader] Üres plugin ID skipped ({plugin_folder.name}/{attr_name})"
-                        self.errors.append(err_msg)
+                        errors.append(err_msg)
                         print(err_msg)
                         continue
 
                     plugin_id = str(plugin_id).strip()
 
                     if plugin_id in registered_ids:
-                        existing_plugin = self.plugins[plugin_id]
-                        err_msg = f"[PluginLoader] Ütköző plugin id '{plugin_id}': a(z) {plugin_folder.name}/{attr_name} felülírná {existing_plugin.__class__.__name__}-t. Átugrás (első nyer)."
-                        self.errors.append(err_msg)
+                        existing_plugin = target_plugins.get(plugin_id, self.plugins.get(plugin_id))
+                        existing_name = (
+                            existing_plugin.__class__.__name__
+                            if existing_plugin
+                            else "existing"
+                        )
+                        err_msg = f"[PluginLoader] Ütköző plugin id '{plugin_id}': a(z) {plugin_folder.name}/{attr_name} felülírná {existing_name}-t. Átugrás (első nyer)."
+                        errors.append(err_msg)
                         print(err_msg)
                         continue
 
                     if self.api_manager:
-                        api_ver = getattr(attr, "api_version_required", getattr(instance, "api_version_required", "1.0.0"))
+                        api_ver = getattr(
+                            attr,
+                            "api_version_required",
+                            getattr(instance, "api_version_required", "1.0.0"),
+                        )
                         compat, msg, _ = self.api_manager.check_compatibility(api_ver)
-                        if not compat and getattr(self.api_manager.config, "strict_version_check", False):
+                        if not compat and getattr(
+                            self.api_manager.config, "strict_version_check", False
+                        ):
                             err_msg = f"[PluginLoader] Nem kompatibilis plugin skipped: {plugin_id} ({msg})"
-                            self.errors.append(err_msg)
+                            errors.append(err_msg)
                             print(err_msg)
                             continue
 
-                        self.api_manager.call_hook("before_plugin_load", plugin_id=plugin_id, plugin=instance)
+                        self.api_manager.call_hook(
+                            "before_plugin_load", plugin_id=plugin_id, plugin=instance
+                        )
 
                     feat_name = self._get_feature_name(instance, plugin_folder.name)
-                    self.plugin_features[plugin_id] = feat_name
-                    self.plugin_folders[plugin_id] = plugin_folder.name
-                    self.plugins[plugin_id] = instance
+                    target_features[plugin_id] = feat_name
+                    target_folders[plugin_id] = plugin_folder.name
+                    target_plugins[plugin_id] = instance
                     registered_ids.add(plugin_id)
-                    print(f"[PluginLoader] Betöltve: {instance.name} ({plugin_id}) [feature: {feat_name}]")
+                    print(
+                        f"[PluginLoader] Betöltve: {instance.name} ({plugin_id}) [feature: {feat_name}]"
+                    )
+
+            if errors:
+                # Ha bármelyik plugin osztály betöltése meghiúsult a modulban, visszaállítjuk az eredeti modult
+                if had_prev_module:
+                    sys.modules[module_name] = prev_module
+                elif module_name in sys.modules:
+                    del sys.modules[module_name]
         except Exception as e:
+            if had_prev_module:
+                sys.modules[module_name] = prev_module
+            elif module_name in sys.modules:
+                del sys.modules[module_name]
             err_msg = f"[PluginLoader] Hiba {plugin_folder.name} betöltésekor: {e}"
-            self.errors.append(err_msg)
+            errors.append(err_msg)
             print(err_msg)
+
+        return errors
 
     def load_all(self):
         """Automatikusan betölti az összes plugint a plugins/ mappából"""
         self.errors = []
+        self._folder_errors = {}
         registered_ids = set()
         if not self.plugins_dir.exists():
             self.plugins_dir.mkdir(exist_ok=True)
             return
 
         for plugin_folder in self.plugins_dir.iterdir():
-            self._load_plugin_folder(plugin_folder, registered_ids)
+            folder_errors = self._load_plugin_folder(plugin_folder, registered_ids)
+            if folder_errors:
+                self._folder_errors[plugin_folder.name] = folder_errors
+                self.errors.extend(folder_errors)
 
     def reload(self, target: str = None) -> Tuple[List[str], List[str]]:
         """
         Újratölti a pluginokat.
-        Ha 'target' meg van adva, kizárólag a megcélzott plugint vagy plugin-kategóriát
+        Ha target meg van adva, kizárólag a megcélzott plugint vagy plugin-kategóriát
         (feature) tölti újra, az érintetlen pluginok példányait és állapotát megőrizve.
         Visszaadja: (loaded_ids, errors)
         """
@@ -286,11 +363,9 @@ class PluginLoader:
             self.load_all()
             return list(self.plugins.keys()), self.get_load_errors()
 
-        # Célzott újratöltés
-        self.errors = []
+        # 1. Beazonosítjuk a célpontot a meglévő regisztrációk alapján MIELŐTT törölnénk az errorokat
         target_str = str(target).strip()
 
-        # 1. Beazonosítjuk az érintett plugin azonosítókat
         target_pids = [
             pid for pid, feat in self.plugin_features.items()
             if pid == target_str or feat == target_str
@@ -303,43 +378,114 @@ class PluginLoader:
                 target_folders.add(folder_name)
 
         # Ha név/kategória alapján nincs meccs, vizsgáljuk meg, hogy mappa-név-e a target
+        is_direct_folder_target = False
         if not target_folders and (self.plugins_dir / target_str).is_dir():
             target_folders.add(target_str)
+            is_direct_folder_target = True
             for pid, folder_name in list(self.plugin_folders.items()):
                 if folder_name == target_str and pid not in target_pids:
                     target_pids.append(pid)
 
-        # Ha nincs egyetlen találat sem, nem csinálunk semmit (determinisztikus kezelés)
+        # P1: Ha nincs egyetlen találat sem, MEGTARTJUK a meglévő hibákat és regisztrációkat
         if not target_folders:
             return list(self.plugins.keys()), self.get_load_errors()
 
-        # Ha egy mappában több plugin is van, az adott mappa újratöltése az összes
-        # ottani plugint érinti. Gyűjtsük ki az összes olyan plugint, ami ezekben a mappákban él.
-        all_affected_pids = [
-            pid for pid, folder_name in self.plugin_folders.items()
-            if folder_name in target_folders
-        ]
-        target_pids = list(set(target_pids + all_affected_pids))
+        # Töröljük kizárólag a célzott mappákhoz tartozó korábbi hibákat
+        self._clear_errors_for_folders(target_folders)
 
-        # Eltávolítjuk a célzott pluginokat a regiszterből
-        for pid in target_pids:
-            self.plugins.pop(pid, None)
-            self.plugin_features.pop(pid, None)
-            self.plugin_folders.pop(pid, None)
-
-        # Eltávolítjuk KIZÁRÓLAG az érintett modulokat a sys.modules-ból
-        for folder_name in target_folders:
-            mod_name = f"plugins.{folder_name}.plugin"
-            if mod_name in sys.modules:
-                del sys.modules[mod_name]
-
-        # Regisztrált ID-k halmaza a meglévő, nem érintett pluginokból
-        registered_ids = set(self.plugins.keys())
-
-        # Csak a célzott mappákat töltjük be újra
+        # 2. Végrehajtjuk az újratöltést staging dictionary-k segítségével és rollback védelemmel
         for folder_name in sorted(target_folders):
             folder_path = self.plugins_dir / folder_name
-            self._load_plugin_folder(folder_path, registered_ids)
+
+            # Mentsünk biztonsági másolatot a mappa jelenlegi regisztrációiról
+            prev_folder_plugins = {
+                pid: inst for pid, inst in self.plugins.items()
+                if self.plugin_folders.get(pid) == folder_name
+            }
+            prev_folder_features = {
+                pid: feat for pid, feat in self.plugin_features.items()
+                if self.plugin_folders.get(pid) == folder_name
+            }
+            prev_folder_names = {
+                pid: f for pid, f in self.plugin_folders.items()
+                if self.plugin_folders.get(pid) == folder_name
+            }
+
+            # Regisztrált ID-k az ezen a mappán KÍVÜLI pluginokból
+            other_registered_ids = {
+                pid for pid in self.plugins if self.plugin_folders.get(pid) != folder_name
+            }
+
+            # Staging dictionary-k a mappához
+            staging_plugins: Dict[str, AlgorithmPluginBase] = {}
+            staging_features: Dict[str, str] = {}
+            staging_folders: Dict[str, str] = {}
+            staging_registered_ids = set(other_registered_ids)
+
+            folder_errors = self._load_plugin_folder(
+                folder_path,
+                staging_registered_ids,
+                target_plugins=staging_plugins,
+                target_features=staging_features,
+                target_folders=staging_folders,
+            )
+
+            if folder_errors:
+                # P0: Ha hiba történt a mappa betöltése során (pl. hiányzó plugin.py, szintaktikai hiba,
+                # vagy egy plugin osztály betöltési hibája), visszaállítjuk az ÖSSZES korábbi működő
+                # regisztrációt ebben a mappában (beleértve a célzott plugint is), megőrizve
+                # azok eredeti példányait ('is') és belső állapotát, megelőzve az állapotvesztést!
+                for pid, inst in prev_folder_plugins.items():
+                    self.plugins[pid] = inst
+                    self.plugin_features[pid] = prev_folder_features[pid]
+                    self.plugin_folders[pid] = prev_folder_names[pid]
+                self._record_folder_errors(folder_name, folder_errors)
+            else:
+                self._record_folder_errors(folder_name, [])
+                # Sikeres betöltés: Alkalmazzuk a frissítést a célzott hatáskör szerint
+                if is_direct_folder_target:
+                    # Teljes mappa célzás: minden plugin a mappában lecserélődik
+                    for pid in list(prev_folder_plugins.keys()):
+                        self.plugins.pop(pid, None)
+                        self.plugin_features.pop(pid, None)
+                        self.plugin_folders.pop(pid, None)
+                    self.plugins.update(staging_plugins)
+                    self.plugin_features.update(staging_features)
+                    self.plugin_folders.update(staging_folders)
+                elif target_str in self.plugin_features or target_str in prev_folder_plugins:
+                    # Specifikus plugin ID célzás:
+                    # Kizárólag a célzott plugin ID-t cseréljük le az új példányra.
+                    # Ha a plugin ID át lett nevezve az új fájlban, eltávolítjuk a régit, és regisztráljuk az újat.
+                    # Az azonos mappában lévő testvér pluginok megtartják meglévő példányaikat (is) és belső állapotukat!
+                    if target_str in staging_plugins:
+                        self.plugins[target_str] = staging_plugins[target_str]
+                        self.plugin_features[target_str] = staging_features[target_str]
+                        self.plugin_folders[target_str] = staging_folders[target_str]
+                    else:
+                        # Ha a plugin átnevezésre került, töröljük a régi ID-t és felvesszük az újonnan deklaráltat
+                        self.plugins.pop(target_str, None)
+                        self.plugin_features.pop(target_str, None)
+                        self.plugin_folders.pop(target_str, None)
+                        for new_pid, inst in staging_plugins.items():
+                            if new_pid not in prev_folder_plugins:
+                                self.plugins[new_pid] = inst
+                                self.plugin_features[new_pid] = staging_features[new_pid]
+                                self.plugin_folders[new_pid] = staging_folders[new_pid]
+                else:
+                    # Feature kategória célzás:
+                    # Töröljük a korábban a célzott kategóriához tartozó pluginokat ebben a mappában
+                    for pid in list(prev_folder_plugins.keys()):
+                        if prev_folder_features.get(pid) == target_str:
+                            self.plugins.pop(pid, None)
+                            self.plugin_features.pop(pid, None)
+                            self.plugin_folders.pop(pid, None)
+                    # Regisztráljuk a stagingből azokat a pluginokat, amelyek korábban a célzott feature-höz tartoztak
+                    # (feature migráció esetén is megőrizve az új feature-metadata-val), vagy újonnan azt deklarálják
+                    for pid, inst in staging_plugins.items():
+                        if staging_features.get(pid) == target_str or prev_folder_features.get(pid) == target_str:
+                            self.plugins[pid] = inst
+                            self.plugin_features[pid] = staging_features[pid]
+                            self.plugin_folders[pid] = staging_folders[pid]
 
         return list(self.plugins.keys()), self.get_load_errors()
 

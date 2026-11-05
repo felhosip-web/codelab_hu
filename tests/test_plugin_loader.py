@@ -2,6 +2,8 @@
 import unittest
 import tempfile
 import shutil
+import time
+import os
 from pathlib import Path
 
 from core.plugin_system import PluginLoader, AlgorithmPluginBase
@@ -119,6 +121,7 @@ class EmptyIdPlugin(AlgorithmPluginBase):
 
         loaded_ids, errors = loader.reload(target="bubble_sort")
         self.assertEqual(len(errors), 0)
+        self.assertIn("bubble_sort", loaded_ids)
 
         bubble_new = loader.get_plugin("bubble_sort")
         linear_new = loader.get_plugin("linear_search")
@@ -265,7 +268,9 @@ class TargetPlugin(AlgorithmPluginBase):
             loader.load_all()
 
             good_instance = loader.get_plugin("good_plugin")
+            target_instance = loader.get_plugin("target_plugin")
             self.assertIsNotNone(good_instance)
+            self.assertIsNotNone(target_instance)
 
             # Break target_file with syntax error
             target_file.write_text("def broken_syntax(:\n", encoding="utf-8")
@@ -275,8 +280,8 @@ class TargetPlugin(AlgorithmPluginBase):
             self.assertGreater(len(errors), 0)
             # Unrelated plugin remains loaded and identical
             self.assertIs(loader.get_plugin("good_plugin"), good_instance)
-            # Target plugin was not successfully loaded
-            self.assertIsNone(loader.get_plugin("target_plugin"))
+            # On failed reload, target plugin instance is safely preserved rather than deleted
+            self.assertIs(loader.get_plugin("target_plugin"), target_instance)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -308,6 +313,563 @@ class TargetPlugin(AlgorithmPluginBase):
         sorting_ids = [p.id for p in grouped["sorting"]]
         self.assertIn("bubble_sort", sorting_ids)
 
+
+
+    def test_reload_folder_with_multiple_classes_preserves_sibling_when_later_class_fails(self):
+        """P0: When a later plugin class in a folder fails during reload, previously registered sibling plugins remain accessible and retain identity."""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "multi_mod"
+            folder.mkdir()
+            plugin_file = folder / "plugin.py"
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class SiblingWorkingPlugin(AlgorithmPluginBase):
+    id = "sibling_working"
+    name = "Sibling Working"
+    plugin_type = "general"
+
+class SecondWorkingPlugin(AlgorithmPluginBase):
+    id = "second_working"
+    name = "Second Working"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            sibling_before = loader.get_plugin("sibling_working")
+            second_before = loader.get_plugin("second_working")
+            self.assertIsNotNone(sibling_before)
+            self.assertIsNotNone(second_before)
+            sibling_before._custom_sibling_state = "sibling_state_intact"
+
+            # Modify plugin.py so SiblingWorkingPlugin is still valid, but SecondWorkingPlugin raises during instantiation
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class SiblingWorkingPlugin(AlgorithmPluginBase):
+    id = "sibling_working"
+    name = "Sibling Working"
+    plugin_type = "general"
+
+class SecondWorkingPlugin(AlgorithmPluginBase):
+    id = "second_working"
+    name = "Second Working"
+    plugin_type = "general"
+    def __init__(self):
+        super().__init__()
+        raise RuntimeError("Instantiation error in second plugin")
+""",
+                encoding="utf-8"
+            )
+
+            loaded_ids, errors = loader.reload(target="second_working")
+            self.assertGreater(len(errors), 0)
+
+            # Sibling working plugin remains accessible and retains its original object identity
+            sibling_after = loader.get_plugin("sibling_working")
+            self.assertIs(sibling_after, sibling_before)
+            self.assertEqual(getattr(sibling_after, "_custom_sibling_state", None), "sibling_state_intact")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_reload_missing_target_preserves_existing_errors_and_plugins(self):
+        """P1: When reload is called with a nonexistent target, existing load errors and registrations are not cleared."""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            broken_folder = Path(temp_dir) / "broken_folder"
+            broken_folder.mkdir()
+            (broken_folder / "plugin.py").write_text("def broken_code(:\n", encoding="utf-8")
+
+            good_folder = Path(temp_dir) / "good_folder"
+            good_folder.mkdir()
+            (good_folder / "plugin.py").write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class GoodPlugin(AlgorithmPluginBase):
+    id = "good_id"
+    name = "Good"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            initial_errors = list(loader.get_load_errors())
+            self.assertGreater(len(initial_errors), 0)
+            good_instance = loader.get_plugin("good_id")
+            self.assertIsNotNone(good_instance)
+
+            # Call reload with nonexistent target
+            loaded_ids, errors = loader.reload(target="nonexistent_target_abc")
+
+            # Existing errors must be preserved, NOT cleared or lost
+            self.assertEqual(errors, initial_errors)
+            self.assertEqual(loader.get_load_errors(), initial_errors)
+            self.assertIs(loader.get_plugin("good_id"), good_instance)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_same_folder_plugin_id_targeting_with_different_features(self):
+        """P1: Targeting a single plugin in a multi-plugin folder with different features updates target, preserves sibling instance and state, and leaves other folders unaffected."""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            same_dir = Path(temp_dir) / "multi_feature_folder"
+            same_dir.mkdir()
+            (same_dir / "plugin.py").write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class FirstPlugin(AlgorithmPluginBase):
+    id = "plugin_first"
+    name = "First"
+    plugin_type = "feature_alpha"
+
+class SecondPlugin(AlgorithmPluginBase):
+    id = "plugin_second"
+    name = "Second"
+    plugin_type = "feature_beta"
+""",
+                encoding="utf-8"
+            )
+
+            other_dir = Path(temp_dir) / "other_folder"
+            other_dir.mkdir()
+            (other_dir / "plugin.py").write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class OtherPlugin(AlgorithmPluginBase):
+    id = "plugin_other"
+    name = "Other"
+    plugin_type = "feature_gamma"
+""",
+                encoding="utf-8"
+            )
+
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            first_old = loader.get_plugin("plugin_first")
+            second_old = loader.get_plugin("plugin_second")
+            other_old = loader.get_plugin("plugin_other")
+
+            self.assertEqual(loader.plugin_features.get("plugin_first"), "feature_alpha")
+            self.assertEqual(loader.plugin_features.get("plugin_second"), "feature_beta")
+            second_old._custom_state = "second_intact"
+            other_old._custom_state = "other_intact"
+
+            # Reload specifically plugin_first
+            loaded_ids, errors = loader.reload(target="plugin_first")
+            self.assertEqual(len(errors), 0)
+
+            first_new = loader.get_plugin("plugin_first")
+            second_new = loader.get_plugin("plugin_second")
+            other_new = loader.get_plugin("plugin_other")
+
+            # Targeted plugin is replaced
+            self.assertIsNot(first_old, first_new)
+            self.assertEqual(first_new.id, "plugin_first")
+
+            # Sibling plugin in the same folder remains identical instance (is) and state preserved
+            self.assertIs(second_old, second_new)
+            self.assertEqual(getattr(second_new, "_custom_state", None), "second_intact")
+
+            # Other folder plugin is completely unaffected
+            self.assertIs(other_old, other_new)
+            self.assertEqual(getattr(other_new, "_custom_state", None), "other_intact")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+    def test_failed_reload_restores_sys_modules_and_registry(self):
+        """Verify that failed module replacement restores exact previous sys.modules object identity ('is') and preserves previous working plugin instances."""
+        import sys
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "mod_rollback_test"
+            folder.mkdir()
+            plugin_file = folder / "plugin.py"
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class RollbackSiblingPlugin(AlgorithmPluginBase):
+    id = "rollback_sibling"
+    name = "Rollback Sibling"
+    plugin_type = "general"
+
+class RollbackTargetPlugin(AlgorithmPluginBase):
+    id = "rollback_target"
+    name = "Rollback Target"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            mod_name = "plugins.mod_rollback_test.plugin"
+            self.assertIn(mod_name, sys.modules)
+            old_mod_obj = sys.modules[mod_name]
+            sibling_old = loader.get_plugin("rollback_sibling")
+            target_old = loader.get_plugin("rollback_target")
+            self.assertIsNotNone(sibling_old)
+            self.assertIsNotNone(target_old)
+
+            sibling_old._custom_state = "sibling_state_intact"
+
+            # 1. Break plugin.py with syntax error (module execution / spec load failure)
+            plugin_file.write_text("def broken_code_syntax(:\n", encoding="utf-8")
+
+            loaded_ids, errors = loader.reload(target="rollback_target")
+            self.assertGreater(len(errors), 0)
+
+            # Check that sys.modules has restored the EXACT old module object
+            self.assertIn(mod_name, sys.modules)
+            self.assertIs(sys.modules[mod_name], old_mod_obj)
+
+            # Check that sibling plugin remains accessible and intact
+            sibling_after = loader.get_plugin("rollback_sibling")
+            self.assertIs(sibling_after, sibling_old)
+            self.assertEqual(getattr(sibling_after, "_custom_state", None), "sibling_state_intact")
+
+            # 2. Test failure during plugin instantiation/validation (runtime exception in class)
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class RollbackSiblingPlugin(AlgorithmPluginBase):
+    id = "rollback_sibling"
+    name = "Rollback Sibling"
+    plugin_type = "general"
+
+class RollbackTargetPlugin(AlgorithmPluginBase):
+    id = "rollback_target"
+    name = "Rollback Target"
+    plugin_type = "general"
+    def __init__(self):
+        super().__init__()
+        raise RuntimeError("Validation / initialization error in target plugin")
+""",
+                encoding="utf-8"
+            )
+
+            loaded_ids, errors = loader.reload(target="rollback_target")
+            self.assertGreater(len(errors), 0)
+
+            # sys.modules MUST still be restored to old_mod_obj
+            self.assertIn(mod_name, sys.modules)
+            self.assertIs(sys.modules[mod_name], old_mod_obj)
+
+            # Sibling plugin remains accessible and identical
+            sibling_after2 = loader.get_plugin("rollback_sibling")
+            self.assertIs(sibling_after2, sibling_old)
+            self.assertEqual(getattr(sibling_after2, "_custom_state", None), "sibling_state_intact")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_missing_plugin_py_reports_error(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "empty_plugin_dir"
+            folder.mkdir()
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+            self.assertEqual(len(loader.plugins), 0)
+            errors = loader.get_load_errors()
+            self.assertGreater(len(errors), 0)
+            self.assertTrue(any("plugin.py nem található" in err for err in errors))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_targeted_reload_renamed_plugin_id(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "dynamic_id_dir"
+            folder.mkdir()
+            plugin_file = folder / "plugin.py"
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class SiblingPlugin(AlgorithmPluginBase):
+    id = "sibling_p"
+    name = "Sibling"
+    plugin_type = "general"
+
+class OldPlugin(AlgorithmPluginBase):
+    id = "old_id"
+    name = "Old"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            sibling_old = loader.get_plugin("sibling_p")
+            self.assertIsNotNone(loader.get_plugin("old_id"))
+
+            # Remove pycache if present and bump mtime for immediate re-execution
+            shutil.rmtree(folder / "__pycache__", ignore_errors=True)
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class SiblingPlugin(AlgorithmPluginBase):
+    id = "sibling_p"
+    name = "Sibling"
+    plugin_type = "general"
+
+class NewPlugin(AlgorithmPluginBase):
+    id = "new_id"
+    name = "New"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+            t = time.time() + 2
+            os.utime(plugin_file, (t, t))
+
+            loaded_ids, errors = loader.reload(target="old_id")
+            self.assertEqual(len(errors), 0)
+            # Old ID must be removed
+            self.assertIsNone(loader.get_plugin("old_id"))
+            # New ID must be registered
+            self.assertIsNotNone(loader.get_plugin("new_id"))
+            # Sibling plugin must remain identical instance
+            sibling_new = loader.get_plugin("sibling_p")
+            self.assertIs(sibling_old, sibling_new)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_targeted_reload_feature_migration(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "feature_mig_dir"
+            folder.mkdir()
+            plugin_file = folder / "plugin.py"
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class MigratingPlugin(AlgorithmPluginBase):
+    id = "migrating_p"
+    name = "Migrating Plugin"
+    plugin_type = "feature_old"
+
+class UnrelatedPlugin(AlgorithmPluginBase):
+    id = "unrelated_p"
+    name = "Unrelated Plugin"
+    plugin_type = "other_feature"
+""",
+                encoding="utf-8"
+            )
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            unrelated_old = loader.get_plugin("unrelated_p")
+            self.assertEqual(loader.plugin_features.get("migrating_p"), "feature_old")
+
+            # Remove pycache if present and bump mtime
+            shutil.rmtree(folder / "__pycache__", ignore_errors=True)
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class MigratingPlugin(AlgorithmPluginBase):
+    id = "migrating_p"
+    name = "Migrating Plugin"
+    plugin_type = "feature_new"
+
+class UnrelatedPlugin(AlgorithmPluginBase):
+    id = "unrelated_p"
+    name = "Unrelated Plugin"
+    plugin_type = "other_feature"
+""",
+                encoding="utf-8"
+            )
+            t = time.time() + 2
+            os.utime(plugin_file, (t, t))
+
+            loaded_ids, errors = loader.reload(target="feature_old")
+            self.assertEqual(len(errors), 0)
+            # Migrating plugin is reloaded with updated feature
+            migrating_new = loader.get_plugin("migrating_p")
+            self.assertIsNotNone(migrating_new)
+            self.assertEqual(loader.plugin_features.get("migrating_p"), "feature_new")
+            # Unrelated plugin remains identical instance
+            unrelated_new = loader.get_plugin("unrelated_p")
+            self.assertIs(unrelated_old, unrelated_new)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_targeted_reload_missing_plugin_file_preserves_target_instance_and_metadata(self):
+        """When a targeted plugin's plugin.py is deleted/missing, reload returns an error and preserves the old plugin instance and metadata intact."""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            folder = Path(temp_dir) / "missing_file_mod"
+            folder.mkdir()
+            plugin_file = folder / "plugin.py"
+            plugin_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class StablePlugin(AlgorithmPluginBase):
+    id = "stable_plugin"
+    name = "Stable Plugin"
+    plugin_type = "feature_stable"
+""",
+                encoding="utf-8"
+            )
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            old_instance = loader.get_plugin("stable_plugin")
+            self.assertIsNotNone(old_instance)
+            old_feature = loader.plugin_features.get("stable_plugin")
+            old_folder = loader.plugin_folders.get("stable_plugin")
+
+            # Remove plugin.py to simulate missing file
+            plugin_file.unlink()
+
+            loaded_ids, errors = loader.reload(target="stable_plugin")
+
+            # Assert error is returned
+            self.assertGreater(len(errors), 0)
+            self.assertTrue(any("plugin.py nem található" in err for err in errors))
+
+            # Assert old plugin remains registered and object identity ('is') is preserved
+            current_instance = loader.get_plugin("stable_plugin")
+            self.assertIs(current_instance, old_instance)
+
+            # Assert feature and folder metadata remain unchanged
+            self.assertEqual(loader.plugin_features.get("stable_plugin"), old_feature)
+            self.assertEqual(loader.plugin_folders.get("stable_plugin"), old_folder)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_targeted_reload_preserves_unrelated_errors(self):
+        """
+        Creates one broken folder with invalid code and one valid plugin folder.
+        Verifies that reloading the valid plugin by its plugin ID preserves
+        the error from the broken folder while updating the valid plugin instance.
+        """
+        temp_dir = tempfile.mkdtemp()
+        try:
+            broken_folder = Path(temp_dir) / "broken_unrelated"
+            broken_folder.mkdir()
+            (broken_folder / "plugin.py").write_text("def broken_code_syntax(:\n", encoding="utf-8")
+
+            valid_folder = Path(temp_dir) / "valid_plugin_dir"
+            valid_folder.mkdir()
+            valid_file = valid_folder / "plugin.py"
+            valid_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class ValidPlugin(AlgorithmPluginBase):
+    id = "valid_plugin"
+    name = "Valid Plugin"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            # Confirm error is recorded for the broken folder
+            initial_errors = list(loader.get_load_errors())
+            self.assertEqual(len(initial_errors), 1)
+            self.assertTrue(any("broken_unrelated" in err for err in initial_errors))
+
+            old_valid_instance = loader.get_plugin("valid_plugin")
+            self.assertIsNotNone(old_valid_instance)
+
+            # Successfully reload the valid plugin by its plugin ID
+            loaded_ids, errors = loader.reload(target="valid_plugin")
+
+            # Verifies that the original error from the broken folder is still present
+            self.assertEqual(len(errors), 1)
+            self.assertEqual(errors, initial_errors)
+            self.assertEqual(loader.get_load_errors(), initial_errors)
+            self.assertTrue(any("broken_unrelated" in err for err in loader.get_load_errors()))
+
+            # Verifies that the valid plugin was actually reloaded and its instance was replaced
+            new_valid_instance = loader.get_plugin("valid_plugin")
+            self.assertIsNotNone(new_valid_instance)
+            self.assertIsNot(old_valid_instance, new_valid_instance)
+            self.assertEqual(new_valid_instance.id, "valid_plugin")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_targeted_reload_clears_repaired_folder_errors_while_preserving_others(self):
+        """
+        Creates two broken plugin folders.
+        Repairs one folder and reloads it.
+        Verifies that errors from the repaired folder are cleared while errors from
+        the other broken folder remain untouched.
+        """
+        temp_dir = tempfile.mkdtemp()
+        try:
+            broken1_folder = Path(temp_dir) / "broken_repairable"
+            broken1_folder.mkdir()
+            broken1_file = broken1_folder / "plugin.py"
+            broken1_file.write_text("def broken_1(:\n", encoding="utf-8")
+
+            broken2_folder = Path(temp_dir) / "broken_staying"
+            broken2_folder.mkdir()
+            (broken2_folder / "plugin.py").write_text("def broken_2(:\n", encoding="utf-8")
+
+            loader = PluginLoader(plugins_dir=temp_dir)
+            loader.load_all()
+
+            initial_errors = list(loader.get_load_errors())
+            self.assertEqual(len(initial_errors), 2)
+            self.assertTrue(any("broken_repairable" in err for err in initial_errors))
+            self.assertTrue(any("broken_staying" in err for err in initial_errors))
+
+            # Repair broken_repairable folder with valid plugin code
+            shutil.rmtree(broken1_folder / "__pycache__", ignore_errors=True)
+            broken1_file.write_text(
+                """
+from core.plugin_system import AlgorithmPluginBase
+
+class RepairedPlugin(AlgorithmPluginBase):
+    id = "repaired_plugin"
+    name = "Repaired Plugin"
+    plugin_type = "general"
+""",
+                encoding="utf-8"
+            )
+
+            # Reload using the folder name as target
+            loaded_ids, errors = loader.reload(target="broken_repairable")
+
+            # Errors for broken_repairable must be cleared, while broken_staying must remain
+            self.assertEqual(len(errors), 1)
+            self.assertEqual(len(loader.get_load_errors()), 1)
+            self.assertFalse(any("broken_repairable" in err for err in errors))
+            self.assertTrue(any("broken_staying" in err for err in errors))
+
+            # Repaired plugin is now loaded
+            repaired_instance = loader.get_plugin("repaired_plugin")
+            self.assertIsNotNone(repaired_instance)
+            self.assertEqual(repaired_instance.id, "repaired_plugin")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()
