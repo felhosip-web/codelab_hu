@@ -227,7 +227,7 @@ class CodeViewerWidget(QFrame):
         extra_selections = []
         doc = self.code_editor.document()
         if 1 <= line_num <= doc.blockCount():
-            block = doc.findBlockByLineNumber(line_num - 1)
+            block = doc.findBlockByNumber(line_num - 1)
             if block.isValid():
                 cursor = QTextCursor(block)
                 selection = QTextEdit.ExtraSelection()

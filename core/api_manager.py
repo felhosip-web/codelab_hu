@@ -123,6 +123,7 @@ class APIManager:
             APIFeature("playback", True, "2.1.0", "Lejátszás vezérlő", False, "", "", "low", False),
             APIFeature("menu", True, "2.2.0", "Menü rendszer", False, "", "", "low", False),
             APIFeature("fourier", True, "1.0.0", "Fourier transzformációk", False, "", "", "medium", False),
+            APIFeature("simulation", True, "1.0.0", "Szimulációs pluginok (pl. jelzőlámpa)", False, "", "", "low", False),
             APIFeature("general", True, "1.0.0", "Általános pluginok és funkciók", False, "", "", "low", False),
             # Kísérleti
             APIFeature("ai_assistant", False, "2.5.0", "AI asszisztens", False, "", "", "high", True),

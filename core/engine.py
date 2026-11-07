@@ -287,8 +287,14 @@ class Engine:
             state.description = description
         path = self.state_manager.save_to_file(state)
         return path
-    def _sync_steps_after_state_change(self, target_step_idx: int):
+    def _sync_steps_after_state_change(self, target_step_idx: int, params: Optional[Dict[str, Any]] = None):
         if self.current_plugin:
+            if params and hasattr(self.current_plugin, 'set_param'):
+                for pid, val in params.items():
+                    try:
+                        self.current_plugin.set_param(pid, val)
+                    except Exception as err:
+                        print(f"[Engine] Error restoring param '{pid}': {err}")
             self.generate_steps(self.current_array)
         if self.steps:
             self.step_idx = max(0, min(target_step_idx, len(self.steps) - 1))
@@ -308,7 +314,7 @@ class Engine:
         if self.current_plugin is None or getattr(self.current_plugin, 'id', None) != state.plugin_id:
             plugin_mismatch = True
 
-        self._sync_steps_after_state_change(state.current_step_idx)
+        self._sync_steps_after_state_change(state.current_step_idx, getattr(state, 'params', None))
         setattr(state, 'plugin_mismatch', plugin_mismatch)
         return state
 
@@ -316,12 +322,12 @@ class Engine:
         state = self.state_manager.undo()
         if state:
             self.current_array = state.array
-            self._sync_steps_after_state_change(state.current_step_idx)
+            self._sync_steps_after_state_change(state.current_step_idx, getattr(state, 'params', None))
         return state
 
     def redo(self):
         state = self.state_manager.redo()
         if state:
             self.current_array = state.array
-            self._sync_steps_after_state_change(state.current_step_idx)
+            self._sync_steps_after_state_change(state.current_step_idx, getattr(state, 'params', None))
         return state
