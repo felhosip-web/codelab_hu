@@ -13,6 +13,7 @@ from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen
 class LampWidget(QWidget):
     """Egyedi kirajzolt lámpa kör alakú optikával és aktív/inaktív kontraszttal"""
     def __init__(self, color_name: str, active_color: str, inactive_color: str, diameter: int = 56):
+        """Inicializálja a lámpa grafikus elemet a megadott színekkel és mérettel."""
         super().__init__()
         self.color_name = color_name
         self.active_color = QColor(active_color)
@@ -22,11 +23,13 @@ class LampWidget(QWidget):
         self.setFixedSize(diameter + 16, diameter + 16)
 
     def set_active(self, active: bool):
+        """Beállítja a lámpa aktív/inaktív állapotát és újrarajzolja, ha változott."""
         if self.is_active != active:
             self.is_active = active
             self.update()
 
     def paintEvent(self, event):
+        """Kirajzolja a lámpatestet, lencsét és az optikai fényhatást."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
@@ -61,6 +64,7 @@ class TrafficLightViewerWidget(QFrame):
     Minden állapotát tisztán a VisualizationStep-ből frissíti (nincs független belső timer).
     """
     def __init__(self, parent=None):
+        """Inicializálja a jelzőlámpa vizualizációs widgetet, a lámpatestet és az információs panelt."""
         super().__init__(parent)
         self.setFrameStyle(QFrame.Box | QFrame.Raised)
         self.setStyleSheet("""

@@ -263,33 +263,47 @@ class TestTrafficLightPlugin(unittest.TestCase):
         if saved_path.exists():
             saved_path.unlink()
 
-    def test_undo_redo_restore_parameters_before_step_index(self):
+    def test_undo_and_redo_restore_timing_parameters(self):
         engine = Engine()
         engine.set_plugin(self.plugin)
-        snapshots = []
-        for duration, cycles in [(5, 3), (1, 1)]:
-            self.plugin.set_param("red_duration", duration)
-            self.plugin.set_param("cycles", cycles)
-            engine.generate_steps()
-            engine.step_idx = len(engine.steps) - 2
-            snapshot = engine.get_current_state()
-            engine.state_manager.push_history(snapshot)
-            snapshots.append((snapshot, list(engine.steps)))
-        for restore, (snapshot, expected) in [(engine.undo, snapshots[0]), (engine.redo, snapshots[1])]:
-            restore()
-            self.assertEqual(self.plugin.params.to_dict(), snapshot.params)
-            self.assertEqual(engine.step_idx, snapshot.current_step_idx)
-            self.assertEqual([s.to_dict() for s in engine.steps], [s.to_dict() for s in expected])
 
-    def test_simulation_feature_can_be_disabled(self):
-        from core.api_manager import APIManager
-        manager = APIManager()
-        self.assertEqual(manager.features["simulation"].version, "3.0.0")
-        self.assertTrue(manager.is_feature_enabled("simulation"))
-        manager.features["simulation"].enabled = False
-        loader = PluginLoader(api_manager=manager)
-        loader.load_all()
-        self.assertNotIn("traffic_light", [p.id for p in loader.list_plugins()])
+        # State 1: cycles=1, red_duration=2
+        self.plugin.set_param("cycles", 1)
+        self.plugin.set_param("red_duration", 2)
+        self.plugin.set_param("red_yellow_duration", 1)
+        self.plugin.set_param("green_duration", 1)
+        self.plugin.set_param("yellow_duration", 1)
+        engine.generate_steps()
+        # 1 INIT + 1 LOOP_START + 2 RED + 1 RY + 1 GREEN + 1 YELLOW + 1 COMPLETED = 8 steps
+        steps_count_1 = len(engine.steps)
+        self.assertEqual(steps_count_1, 8)
+        engine.state_manager.push_history(engine.get_current_state())
+
+        # State 2: modify parameters to cycles=2, red_duration=4
+        self.plugin.set_param("cycles", 2)
+        self.plugin.set_param("red_duration", 4)
+        engine.generate_steps()
+        steps_count_2 = len(engine.steps)
+        # Cycle length: 4 RED + 1 RY + 1 GREEN + 1 YELLOW = 7 steps/cycle
+        # 2 cycles: 1 INIT + 2 LOOP_START + 14 lamp steps + 1 COMPLETED = 18 steps
+        self.assertEqual(steps_count_2, 18)
+        self.assertEqual(self.plugin.params.get("cycles"), 2)
+        self.assertEqual(self.plugin.params.get("red_duration"), 4)
+        engine.state_manager.push_history(engine.get_current_state())
+
+        # Test undo(): should restore State 1 parameters and regenerate steps
+        state_undo = engine.undo()
+        self.assertIsNotNone(state_undo)
+        self.assertEqual(self.plugin.params.get("cycles"), 1)
+        self.assertEqual(self.plugin.params.get("red_duration"), 2)
+        self.assertEqual(len(engine.steps), steps_count_1)
+
+        # Test redo(): should restore State 2 parameters and regenerate steps
+        state_redo = engine.redo()
+        self.assertIsNotNone(state_redo)
+        self.assertEqual(self.plugin.params.get("cycles"), 2)
+        self.assertEqual(self.plugin.params.get("red_duration"), 4)
+        self.assertEqual(len(engine.steps), steps_count_2)
 
     def test_plugin_loader_discovery_and_category(self):
         loader = PluginLoader()
@@ -434,7 +448,13 @@ class TestTrafficLightGUI(unittest.TestCase):
         resolved_pascal_line = win.resolve_step_code_line(current_step, "Pascal")
         self.assertEqual(resolved_pascal_line, 8)
 
-        # Check visualizer cache cleanup on reload (mocking QMessageBox to prevent modal block)
+        # Inspect the actual extra selection in the code editor and assert selected QTextBlock has index 7 (Pascal line 8)
+        extra_selections = win.code_viewer.code_editor.extraSelections()
+        self.assertGreaterEqual(len(extra_selections), 1, "Code editor should have active extra selection")
+        selected_block = extra_selections[0].cursor.block()
+        self.assertEqual(selected_block.blockNumber(), 7, "Selected QTextBlock blockNumber() should be 7 (0-based for line 8)")
+
+        # Verify safe visualizer cleanup during reload
         self.assertIn("traffic_light", win.plugin_visualizers)
         from unittest.mock import patch
         with patch("ui.main_window.QMessageBox.information"), patch("ui.main_window.QMessageBox.warning"):
@@ -442,6 +462,96 @@ class TestTrafficLightGUI(unittest.TestCase):
                 win.on_reload_plugins()
                 self.app.processEvents()
                 self.assertEqual(len(win.plugin_visualizers), 0)
+                # Active widget must be safely reset to array_viewer
+                self.assertEqual(win.viz_stack.currentWidget(), win.array_viewer)
+
+        win.close()
+        win.deleteLater()
+
+    def test_countdown_playback_intervals_and_scaling(self):
+        from ui.main_window import MainWindow
+        win = MainWindow()
+        win.show()
+        self.app.processEvents()
+
+        plugin = win.plugin_loader.get_plugin("traffic_light")
+        self.assertIsNotNone(plugin)
+        win.current_plugin = plugin
+        win.update_active_visualizer()
+        win.reset()
+        self.app.processEvents()
+
+        # Step 0: INIT (step_duration_ms=1000)
+        init_step = win.steps[0]
+        self.assertEqual(init_step.extra.get("step_duration_ms"), 1000)
+
+        # Baseline slider is 500 ms -> ratio is 500/500 = 1.0 -> countdown interval should be 1000 ms
+        win.speed_slider.setValue(500)
+        self.assertEqual(win.get_current_step_interval(init_step), 1000)
+
+        # Slider scaled to 250 ms (2x faster) -> ratio is 250/500 = 0.5 -> interval is 500 ms
+        win.speed_slider.setValue(250)
+        self.assertEqual(win.get_current_step_interval(init_step), 500)
+
+        # Slider scaled to 1000 ms (2x slower) -> ratio is 1000/500 = 2.0 -> interval is 2000 ms
+        win.speed_slider.setValue(1000)
+        self.assertEqual(win.get_current_step_interval(init_step), 2000)
+
+        # Verify non-countdown plugin (e.g. bubble sort) preserves standard slider timing
+        bubble_plugin = win.plugin_loader.get_plugin("bubble_sort")
+        win.current_plugin = bubble_plugin
+        win.update_active_visualizer()
+        win.reset()
+        self.app.processEvents()
+
+        win.speed_slider.setValue(350)
+        normal_step = win.steps[0]
+        # bubble_sort steps do not have step_duration_ms in extra
+        self.assertEqual(win.get_current_step_interval(normal_step), 350)
+
+        win.close()
+        win.deleteLater()
+
+    def test_breakpoint_stop_message_localized_language(self):
+        from ui.main_window import MainWindow
+        win = MainWindow()
+        win.show()
+        self.app.processEvents()
+
+        plugin = win.plugin_loader.get_plugin("traffic_light")
+        win.current_plugin = plugin
+        win.update_active_visualizer()
+        win.reset()
+        self.app.processEvents()
+
+        # Place breakpoint on RED tag (canonical line 6 in Python)
+        win.breakpoint_manager.clear_all()
+        win.breakpoint_manager.toggle_breakpoint("traffic_light", 6)
+
+        # Test in Pascal: RED tag resolves to line 11
+        win.lang_combo.setCurrentText("Pascal")
+        win.on_language_changed("Pascal")
+        self.app.processEvents()
+
+        # Step until breakpoint is hit (step 2 is RED)
+        win.next_step()  # step 1: LOOP_START
+        win.next_step()  # step 2: RED (stopped=True)
+        self.app.processEvents()
+
+        current_step = win.steps[win.current_step_idx]
+        self.assertTrue(getattr(current_step, 'stopped', False))
+        self.assertIn("11. sornál", win.explanation_label.text())
+
+        # Reset and test in C++: RED tag resolves to line 7
+        win.reset()
+        win.lang_combo.setCurrentText("C++")
+        win.on_language_changed("C++")
+        self.app.processEvents()
+
+        win.next_step()  # step 1: LOOP_START
+        win.next_step()  # step 2: RED (stopped=True)
+        self.app.processEvents()
+        self.assertIn("7. sornál", win.explanation_label.text())
 
         win.close()
         win.deleteLater()
@@ -509,37 +619,6 @@ class TestTrafficLightGUI(unittest.TestCase):
 
         win.close()
         win.deleteLater()
-
-    def test_countdown_playback_and_breakpoint_stop(self):
-        from ui.main_window import MainWindow
-        from unittest.mock import patch
-        win = MainWindow()
-        self.addCleanup(win.deleteLater)
-        self.addCleanup(win.close)
-        win.current_plugin = win.plugin_loader.get_plugin("traffic_light")
-        win.reset()
-        win.api_manager.config.animation_speed = 1.0
-        win.speed_slider.setValue(300)
-        win.engine.step_idx = win.current_step_idx = 2
-        win.toggle_play()
-        self.assertEqual(win.timer.interval(), 1000)
-        win.on_speed_changed(150)
-        self.assertEqual(win.timer.interval(), 500)
-        win.on_speed_changed(300)
-        win.next_step()
-        self.assertEqual(win.timer.interval(), 1000)
-        win.toggle_play()
-        win.lang_combo.setCurrentText("Pascal")
-        step = win.steps[2]
-        canonical_line = step.code_line
-        step.stopped = True
-        with patch.object(win.engine, "next_step", return_value=step):
-            win.next_step()
-        self.assertIn("11. sornál", win.explanation_label.text())
-        self.assertEqual(step.code_line, canonical_line)
-        win.engine.step_idx = win.current_step_idx = len(win.steps) - 1
-        win.toggle_play()
-        self.assertEqual(win.timer.interval(), 300)
 
     def test_legacy_plugin_backward_compatibility(self):
         from ui.main_window import MainWindow

@@ -561,14 +561,28 @@ class MainWindow(QMainWindow):
         perf_ok = self.api_manager.is_feature_enabled("performance_monitor")
         self.stats_bar.setVisible(perf_ok)
 
-    def playback_interval(self, default_interval):
-        """Scale explicitly timed steps relative to the default 300 ms slider value."""
-        if self.steps and 0 <= self.current_step_idx < len(self.steps):
-            duration = self.steps[self.current_step_idx].extra.get("step_duration_ms")
-            if duration is not None:
-                speed = max(0.1, self.api_manager.config.animation_speed)
-                return max(1, round(duration * self.speed_slider.value() / 300 / speed))
-        return default_interval
+    def get_current_step_interval(self, step=None) -> int:
+        """
+        Kiszámítja az aktuális lépéshez tartozó lejátszási intervallumot (ms).
+        Ha a lépés rendelkezik explicit step_duration_ms értékkel (pl. 1000 ms a jelzőlámpa visszaszámlálásánál),
+        akkor azt a sebességcsúszka arányában (500 ms alapértelmezett értéket 1.0x szorzónak véve) és az animációs
+        sebességfaktorral skálázva alkalmazza, garantálva a valós idejű szimuláció pontosságát.
+        Hagyományos algoritmus lépéseknél megőrzi a standard speed_slider / anim_speed értéket.
+        """
+        anim_speed = max(0.1, self.api_manager.config.animation_speed)
+        base_slider = self.speed_slider.value()
+        if step is None and self.steps and 0 <= self.current_step_idx < len(self.steps):
+            step = self.steps[self.current_step_idx]
+
+        step_duration = None
+        if step and hasattr(step, 'extra') and isinstance(step.extra, dict):
+            step_duration = step.extra.get('step_duration_ms')
+
+        if step_duration is not None and step_duration > 0:
+            scale_ratio = base_slider / 500.0
+            return max(50, int((step_duration * scale_ratio) / anim_speed))
+
+        return max(10, int(base_slider / anim_speed))
 
     def toggle_play(self):
         if not self.api_manager.is_feature_enabled("playback") or not self.api_manager.config.enable_animations:
@@ -581,9 +595,8 @@ class MainWindow(QMainWindow):
             self.btn_play.setText(f"▶ {UI_TEXTS['play']}")
             self.bottom_btn_play.setText("▶")
         else:
-            anim_speed = max(0.1, self.api_manager.config.animation_speed)
-            speed = int(self.speed_slider.value() / anim_speed)
-            self.timer.start(self.playback_interval(speed))
+            speed = self.get_current_step_interval()
+            self.timer.start(speed)
             self.is_playing = True
             self.btn_play.setText(f"⏸ {UI_TEXTS['pause']}")
             self.bottom_btn_play.setText("⏸")
@@ -593,12 +606,17 @@ class MainWindow(QMainWindow):
         if step is not None:
             self.current_step_idx = self.engine.step_idx
             self.show_step(step)
+            if self.is_playing:
+                new_interval = self.get_current_step_interval(step)
+                if self.timer.interval() != new_interval:
+                    self.timer.setInterval(new_interval)
             if getattr(step, 'stopped', False):
                 self.timer.stop()
                 self.is_playing = False
                 self.btn_play.setText(f"▶ {UI_TEXTS['play']}")
                 self.bottom_btn_play.setText("▶")
-                self.explanation_label.setText(f"🛑 Töréspont elért! A végrehajtás megállt a(z) {self.resolve_step_code_line(step)}. sornál.")
+                displayed_line = self.resolve_step_code_line(step)
+                self.explanation_label.setText(f"🛑 Töréspont elért! A végrehajtás megállt a(z) {displayed_line}. sornál.")
         else:
             self.timer.stop()
             self.is_playing = False
@@ -628,7 +646,7 @@ class MainWindow(QMainWindow):
         if self.bottom_speed_slider.value() != value:
             self.bottom_speed_slider.setValue(value)
         if self.is_playing:
-            self.timer.setInterval(self.playback_interval(value))
+            self.timer.setInterval(self.get_current_step_interval())
 
     def on_progress_slider_moved(self, value):
         if 0 <= value < len(self.steps):
@@ -647,7 +665,7 @@ class MainWindow(QMainWindow):
             self.current_step_idx = val
             self.show_step(self.steps[self.current_step_idx])
         if self.is_playing:
-            self.timer.start(self.playback_interval(self.speed_slider.value()))
+            self.timer.start(self.get_current_step_interval())
 
     def open_rest_api_dialog(self):
         dialog = RESTAPIDialog(self.rest_server, plugin_loader=self.plugin_loader, engine=self.engine, parent=self)
@@ -783,11 +801,6 @@ class MainWindow(QMainWindow):
             self.explanation_label.setText(f"🛑 Töréspont {shown_line}. sornál {status} ({plugin_id}).")
 
     def show_step(self, step):
-        timed_step = "step_duration_ms" in step.extra
-        if self.is_playing and (timed_step or getattr(self, "_timed_step", False)):
-            speed = max(0.1, self.api_manager.config.animation_speed)
-            self.timer.setInterval(self.playback_interval(int(self.speed_slider.value() / speed)))
-        self._timed_step = timed_step
         arr = getattr(step, 'array', None)
         key = getattr(step, 'key', None)
         sorted_end = getattr(step, 'sorted_end', -1)

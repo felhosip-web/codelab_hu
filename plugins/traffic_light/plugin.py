@@ -128,6 +128,7 @@ TAG_PATTERN = re.compile(
 
 
 def _process_templates():
+    """Feldolgozza a sablonokat: eltávolítja a címkéket és kinyeri a sorszámokat."""
     for lang, raw_code in RAW_CODE_TEMPLATES.items():
         clean_lines: List[str] = []
         tag_map: Dict[str, int] = {}
@@ -149,6 +150,10 @@ _process_templates()
 
 
 class TrafficLightPlugin(AlgorithmPluginBase):
+    """
+    Oktatási Jelzőlámpa szimulációs plugin.
+    3-lámpás ciklus, forráskód-követés, visszaszámlálás.
+    """
     id = "traffic_light"
     name = "Jelzőlámpa szimuláció"
     description = "Klasszikus 3-lámpás forgalomirányító jelzőlámpa állapota és forráskód-szinkronja"
@@ -178,6 +183,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
     }
 
     def __init__(self):
+        """Inicializálja a szimulációs paramétereket és belső állapotot."""
         self.params = DynamicParams()
         self.params.add(Param("red_duration", "Piros idő (mp)", "int", 3, 1, 10, description="Piros fény időtartama"))
         self.params.add(Param("red_yellow_duration", "Piros-sárga idő (mp)", "int", 1, 1, 5, description="Piros-sárga átmenet időtartama"))
@@ -188,23 +194,29 @@ class TrafficLightPlugin(AlgorithmPluginBase):
         self._custom_visualizer = None
 
     def get_params(self) -> DynamicParams:
+        """Visszaadja a konfigurálható dinamikus paramétereket."""
         return self.params
 
     def set_param(self, pid: str, val):
+        """Beállítja a megadott azonosítójú paraméter értékét."""
         self.params.set(pid, val)
 
     def get_code(self, language: str) -> str:
+        """Visszaadja a tiszta forráskódot a kért nyelven."""
         return CLEAN_CODE_TEMPLATES.get(language, CLEAN_CODE_TEMPLATES["Python"])
 
     def get_supported_languages(self) -> List[str]:
+        """Visszaadja a támogatott nyelvek listáját."""
         return ["Python", "C++", "C", "BASIC", "Java", "Pascal"]
 
     @classmethod
     def get_line_for_tag(cls, language: str, tag: str) -> int:
+        """Visszaadja a megadott címkéhez tartozó 1-alapú sorszámot a kért nyelven."""
         lang_tags = DERIVED_TAG_LINES.get(language, DERIVED_TAG_LINES.get("Python", {}))
         return lang_tags.get(tag, 1)
 
     def create_visualizer(self):
+        """Létrehozza és visszaadja a dedikált TrafficLightViewerWidget példányt."""
         try:
             from ui.traffic_light_widget import TrafficLightViewerWidget
             if self._custom_visualizer is None:
@@ -240,6 +252,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
                 "lamps": {"red": False, "yellow": False, "green": False},
                 "remaining_time": 0,
                 "duration": 0,
+                "step_duration_ms": 1000,
                 "cycle": 0,
                 "total_cycles": total_cycles,
                 "phase_index": 0,
@@ -267,6 +280,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
                     "lamps": loop_lamps,
                     "remaining_time": 0,
                     "duration": 0,
+                    "step_duration_ms": 1000,
                     "cycle": cycle_idx,
                     "total_cycles": total_cycles,
                     "next_state": self.STATE_RED,
@@ -308,11 +322,11 @@ class TrafficLightPlugin(AlgorithmPluginBase):
                             "lamps": dict(lamps),
                             "remaining_time": rem,
                             "duration": duration,
+                            "step_duration_ms": 1000,
                             "cycle": cycle_idx,
                             "total_cycles": total_cycles,
                             "next_state": next_state,
                             "step_index": total_step_counter,
-                            "step_duration_ms": 1000,
                         }
                     )
 
@@ -330,6 +344,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
                 "lamps": {"red": False, "yellow": False, "green": False},
                 "remaining_time": 0,
                 "duration": 0,
+                "step_duration_ms": 1000,
                 "cycle": total_cycles,
                 "total_cycles": total_cycles,
                 "next_state": None,
