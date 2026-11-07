@@ -263,6 +263,34 @@ class TestTrafficLightPlugin(unittest.TestCase):
         if saved_path.exists():
             saved_path.unlink()
 
+    def test_undo_redo_restore_parameters_before_step_index(self):
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        snapshots = []
+        for duration, cycles in [(5, 3), (1, 1)]:
+            self.plugin.set_param("red_duration", duration)
+            self.plugin.set_param("cycles", cycles)
+            engine.generate_steps()
+            engine.step_idx = len(engine.steps) - 2
+            snapshot = engine.get_current_state()
+            engine.state_manager.push_history(snapshot)
+            snapshots.append((snapshot, list(engine.steps)))
+        for restore, (snapshot, expected) in [(engine.undo, snapshots[0]), (engine.redo, snapshots[1])]:
+            restore()
+            self.assertEqual(self.plugin.params.to_dict(), snapshot.params)
+            self.assertEqual(engine.step_idx, snapshot.current_step_idx)
+            self.assertEqual([s.to_dict() for s in engine.steps], [s.to_dict() for s in expected])
+
+    def test_simulation_feature_can_be_disabled(self):
+        from core.api_manager import APIManager
+        manager = APIManager()
+        self.assertEqual(manager.features["simulation"].version, "3.0.0")
+        self.assertTrue(manager.is_feature_enabled("simulation"))
+        manager.features["simulation"].enabled = False
+        loader = PluginLoader(api_manager=manager)
+        loader.load_all()
+        self.assertNotIn("traffic_light", [p.id for p in loader.list_plugins()])
+
     def test_plugin_loader_discovery_and_category(self):
         loader = PluginLoader()
         loader.load_all()
@@ -481,6 +509,37 @@ class TestTrafficLightGUI(unittest.TestCase):
 
         win.close()
         win.deleteLater()
+
+    def test_countdown_playback_and_breakpoint_stop(self):
+        from ui.main_window import MainWindow
+        from unittest.mock import patch
+        win = MainWindow()
+        self.addCleanup(win.deleteLater)
+        self.addCleanup(win.close)
+        win.current_plugin = win.plugin_loader.get_plugin("traffic_light")
+        win.reset()
+        win.api_manager.config.animation_speed = 1.0
+        win.speed_slider.setValue(300)
+        win.engine.step_idx = win.current_step_idx = 2
+        win.toggle_play()
+        self.assertEqual(win.timer.interval(), 1000)
+        win.on_speed_changed(150)
+        self.assertEqual(win.timer.interval(), 500)
+        win.on_speed_changed(300)
+        win.next_step()
+        self.assertEqual(win.timer.interval(), 1000)
+        win.toggle_play()
+        win.lang_combo.setCurrentText("Pascal")
+        step = win.steps[2]
+        canonical_line = step.code_line
+        step.stopped = True
+        with patch.object(win.engine, "next_step", return_value=step):
+            win.next_step()
+        self.assertIn("11. sornál", win.explanation_label.text())
+        self.assertEqual(step.code_line, canonical_line)
+        win.engine.step_idx = win.current_step_idx = len(win.steps) - 1
+        win.toggle_play()
+        self.assertEqual(win.timer.interval(), 300)
 
     def test_legacy_plugin_backward_compatibility(self):
         from ui.main_window import MainWindow

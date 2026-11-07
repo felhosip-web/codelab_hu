@@ -312,6 +312,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
                             "total_cycles": total_cycles,
                             "next_state": next_state,
                             "step_index": total_step_counter,
+                            "step_duration_ms": 1000,
                         }
                     )
 
