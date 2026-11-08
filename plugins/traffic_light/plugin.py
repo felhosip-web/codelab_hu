@@ -284,7 +284,7 @@ class TrafficLightPlugin(AlgorithmPluginBase):
                     "lamps": loop_lamps,
                     "remaining_time": 0,
                     "duration": 0,
-                    "step_duration_ms": 1000,
+                    "step_duration_ms": 0,
                     "cycle": cycle_idx,
                     "total_cycles": total_cycles,
                     "next_state": self.STATE_RED,
@@ -703,7 +703,7 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                     "vehicles": {d: [dict(v) for v in vehicles[d]] for d in vehicles},
                     "remaining_time": 0,
                     "duration": 0,
-                    "step_duration_ms": 1000,
+                    "step_duration_ms": 0,
                     "cycle": cycle_idx,
                     "total_cycles": total_cycles,
                     "step_index": total_step_counter,
@@ -786,7 +786,8 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                         for v in vehicles[d]:
                             if v["status"] == "crossing":
                                 v["crossing_progress"] += 1
-                                if v["crossing_progress"] >= 2:
+                                # Show progress 2 at the far edge before hiding the vehicle.
+                                if v["crossing_progress"] >= 3:
                                     v["status"] = "departed"
 
                     # 2. Ütközésmentesség ellenőrzése

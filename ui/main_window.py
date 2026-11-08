@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
 )
 from core.workspace_config import WorkspaceConfig
 
+DEFAULT_STEP_INTERVAL_MS = 300
+
 CATEGORY_NAMES = {
     "sorting": "🔀 Rendezések",
     "search": "🔍 Keresések",
@@ -208,7 +210,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(QLabel("Sebesség"))
         self.speed_slider = QSlider(Qt.Horizontal)
         self.speed_slider.setRange(50, 1000)
-        self.speed_slider.setValue(300)
+        self.speed_slider.setValue(DEFAULT_STEP_INTERVAL_MS)
         self.speed_slider.setInvertedAppearance(True)
         self.speed_slider.valueChanged.connect(self.on_speed_changed)
         left_layout.addWidget(self.speed_slider)
@@ -273,7 +275,7 @@ class MainWindow(QMainWindow):
         bottom_layout.addWidget(QLabel("Seb:"))
         self.bottom_speed_slider = QSlider(Qt.Horizontal)
         self.bottom_speed_slider.setRange(50, 1000)
-        self.bottom_speed_slider.setValue(300)
+        self.bottom_speed_slider.setValue(DEFAULT_STEP_INTERVAL_MS)
         self.bottom_speed_slider.setInvertedAppearance(True)
         self.bottom_speed_slider.setMaximumWidth(150)
         self.bottom_speed_slider.valueChanged.connect(self.on_speed_changed)
@@ -565,7 +567,7 @@ class MainWindow(QMainWindow):
         """
         Kiszámítja az aktuális lépéshez tartozó lejátszási intervallumot (ms).
         Ha a lépés rendelkezik explicit step_duration_ms értékkel (pl. 1000 ms a jelzőlámpa visszaszámlálásánál),
-        akkor azt a sebességcsúszka arányában (500 ms alapértelmezett értéket 1.0x szorzónak véve) és az animációs
+        akkor azt a sebességcsúszka arányában (300 ms alapértelmezett értéket 1.0x szorzónak véve) és az animációs
         sebességfaktorral skálázva alkalmazza, garantálva a valós idejű szimuláció pontosságát.
         Hagyományos algoritmus lépéseknél megőrzi a standard speed_slider / anim_speed értéket.
         """
@@ -578,8 +580,10 @@ class MainWindow(QMainWindow):
         if step and hasattr(step, 'extra') and isinstance(step.extra, dict):
             step_duration = step.extra.get('step_duration_ms')
 
+        if step_duration == 0:
+            return 0
         if step_duration is not None and step_duration > 0:
-            scale_ratio = base_slider / 500.0
+            scale_ratio = base_slider / DEFAULT_STEP_INTERVAL_MS
             return max(50, int((step_duration * scale_ratio) / anim_speed))
 
         return max(10, int(base_slider / anim_speed))

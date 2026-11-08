@@ -33,8 +33,8 @@ class IntersectionCanvasWidget(QWidget):
 
     def set_simulation_state(self, lights: Dict[str, Dict[str, bool]], vehicles: Dict[str, List[Dict[str, Any]]], right_of_way: str):
         """Beállítja az aktuális vizuális állapotot és újrarajzolást kér."""
-        self.lights = lights or self.lights
-        self.vehicles = vehicles or self.vehicles
+        self.lights = lights or {}
+        self.vehicles = vehicles or {}
         self.right_of_way = right_of_way or "NONE"
         self.update()
 
@@ -136,8 +136,11 @@ class IntersectionCanvasWidget(QWidget):
 
     def _draw_vehicles(self, painter: QPainter, cx: float, cy: float, rw2: float):
         """Kirajzolja az összes közeledő, várakozó és áthaladó járművet."""
-        car_w = rw2 * 0.40
-        car_len = rw2 * 0.65
+        # Fit the maximum six-car queue on even the minimum canvas size.
+        approach = min(cx, cy) - rw2
+        gap = 3.0
+        car_len = min(rw2 * 0.65, (approach - 8 - 5 * gap - 1) / 6)
+        car_w = min(rw2 * 0.40, car_len * 0.65)
 
         # Színek irányonként
         colors = {
@@ -158,7 +161,7 @@ class IntersectionCanvasWidget(QWidget):
                 vy = (cy - rw2) + prog * (rw2 * 1.0)
             else:
                 q = v.get("queue_pos", 0)
-                vy = (cy - rw2) - car_len - 8 - q * (car_len + 12)
+                vy = (cy - rw2) - car_len - 8 - q * (car_len + gap)
             self._draw_car_rect(painter, ns_lane_x_southbound - car_w / 2.0, vy, car_w, car_len, color, v["id"])
 
         # Déli járművek (Észak felé tartanak: x = cx - rw2/2)
@@ -169,10 +172,10 @@ class IntersectionCanvasWidget(QWidget):
             color = colors["south"]
             if v["status"] == "crossing":
                 prog = v.get("crossing_progress", 1)
-                vy = (cy + rw2) - prog * (rw2 * 1.0)
+                vy = (cy + rw2) - prog * rw2 - (prog - 1) * car_len
             else:
                 q = v.get("queue_pos", 0)
-                vy = (cy + rw2) + 8 + q * (car_len + 12)
+                vy = (cy + rw2) + 8 + q * (car_len + gap)
             self._draw_car_rect(painter, ns_lane_x_northbound - car_w / 2.0, vy, car_w, car_len, color, v["id"])
 
         # Keleti járművek (Nyugat felé tartanak: y = cy - rw2/2)
@@ -183,10 +186,10 @@ class IntersectionCanvasWidget(QWidget):
             color = colors["east"]
             if v["status"] == "crossing":
                 prog = v.get("crossing_progress", 1)
-                vx = (cx + rw2) - prog * (rw2 * 1.0)
+                vx = (cx + rw2) - prog * rw2 - (prog - 1) * car_len
             else:
                 q = v.get("queue_pos", 0)
-                vx = (cx + rw2) + 8 + q * (car_len + 12)
+                vx = (cx + rw2) + 8 + q * (car_len + gap)
             self._draw_car_rect(painter, vx, ew_lane_y_westbound - car_w / 2.0, car_len, car_w, color, v["id"])
 
         # Nyugati járművek (Kelet felé tartanak: y = cy + rw2/2)
@@ -200,7 +203,7 @@ class IntersectionCanvasWidget(QWidget):
                 vx = (cx - rw2) + prog * (rw2 * 1.0)
             else:
                 q = v.get("queue_pos", 0)
-                vx = (cx - rw2) - car_len - 8 - q * (car_len + 12)
+                vx = (cx - rw2) - car_len - 8 - q * (car_len + gap)
             self._draw_car_rect(painter, vx, ew_lane_y_eastbound - car_w / 2.0, car_len, car_w, color, v["id"])
 
     def _draw_car_rect(self, painter: QPainter, x: float, y: float, w: float, h: float, color: QColor, text: str):
@@ -365,8 +368,8 @@ class TrafficIntersectionViewerWidget(QFrame):
         Tisztán a lépésből olvas, nem használ belső timert.
         """
         extra = getattr(step, 'extra', {}) or {}
-        lights = extra.get("lights", {})
-        vehicles = extra.get("vehicles", {})
+        lights = extra.get("lights") or {}
+        vehicles = extra.get("vehicles") or {}
         row = extra.get("right_of_way", "NONE")
         row_hu = extra.get("right_of_way_hu", row)
 
@@ -401,7 +404,7 @@ class TrafficIntersectionViewerWidget(QFrame):
         self.ew_light_status.setText(f"Kelet-Nyugat: {ew_str}")
         self.ew_light_status.setStyleSheet(f"color: {ew_col}; font-weight: bold; font-size: 12px;")
 
-        arr = getattr(step, 'array', [0, 0, 0])
+        arr = getattr(step, 'array', None) or []
         w_ns = arr[0] if len(arr) > 0 else 0
         w_ew = arr[1] if len(arr) > 1 else 0
         passed = arr[2] if len(arr) > 2 else 0

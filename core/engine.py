@@ -308,26 +308,24 @@ class Engine:
         Sets state.plugin_mismatch = True if state.plugin_id differs from current_plugin.id.
         """
         state = self.state_manager.load_from_file(path)
-        self.current_array = state.array
-
-        plugin_mismatch = False
-        if self.current_plugin is None or getattr(self.current_plugin, 'id', None) != state.plugin_id:
-            plugin_mismatch = True
-
-        self._sync_steps_after_state_change(state.current_step_idx, getattr(state, 'params', None))
-        setattr(state, 'plugin_mismatch', plugin_mismatch)
+        self._restore_state(state)
         return state
+
+    def _restore_state(self, state: AppState):
+        self.current_array = state.array
+        mismatch = self.current_plugin is None or self.current_plugin.id != state.plugin_id
+        params = None if mismatch else getattr(state, 'params', None)
+        self._sync_steps_after_state_change(state.current_step_idx, params)
+        setattr(state, 'plugin_mismatch', mismatch)
 
     def undo(self):
         state = self.state_manager.undo()
         if state:
-            self.current_array = state.array
-            self._sync_steps_after_state_change(state.current_step_idx, getattr(state, 'params', None))
+            self._restore_state(state)
         return state
 
     def redo(self):
         state = self.state_manager.redo()
         if state:
-            self.current_array = state.array
-            self._sync_steps_after_state_change(state.current_step_idx, getattr(state, 'params', None))
+            self._restore_state(state)
         return state
