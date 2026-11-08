@@ -277,15 +277,61 @@ class TestTrafficIntersectionPlugin(unittest.TestCase):
                 self.assertEqual(sv["direction"], "south")
 
     def test_queue_advancement_maintains_valid_contiguous_indices(self):
-        """5. Safety Invariant: a járműsor sosem tartalmazhat duplikált, negatív vagy hiányos pozíciókat."""
+        """5. Safety Invariant: a járműsor sosem tartalmazhat duplikált, negatív pozíciókat, és tick végére rendezett."""
         steps = list(self.plugin.get_steps())
         for step in steps:
             vehicles = step.extra.get("vehicles", {})
             for d in ["north", "south", "east", "west"]:
                 q_positions = [v["queue_pos"] for v in vehicles.get(d, []) if v["status"] in ("waiting", "queued")]
                 self.assertEqual(len(q_positions), len(set(q_positions)), f"Duplicate queue positions in {d}")
-                if q_positions:
+                # A sorban álló járművek indexei nem lehetnek negatívak
+                self.assertTrue(all(p >= 0 for p in q_positions))
+                # Tick befejező állapotban (nem közbenső START_VEHICLES) a sor folytonos 0-tól kezdődően
+                if step.extra.get("tag") != "START_VEHICLES" and q_positions:
                     self.assertEqual(sorted(q_positions), list(range(len(q_positions))), f"Non-contiguous queue in {d}")
+
+    def test_ordered_semantic_events_within_simulation_tick(self):
+        """Teszteli a szimulációs ticken belüli szemantikai események szigorú végrehajtási sorrendjét."""
+        steps = list(self.plugin.get_steps())
+        tags = [s.extra["tag"] for s in steps]
+
+        # Keressünk egy zöld ciklust, ahol járművek mozognak és a sor előrelép
+        # A sorrendnek PROCESS_CROSSING -> CHECK_CONFLICT -> START_VEHICLES -> ADVANCE_QUEUE kell lennie
+        subseq = []
+        for i in range(len(tags) - 3):
+            window = tags[i:i+4]
+            if window == ["PROCESS_CROSSING", "CHECK_CONFLICT", "START_VEHICLES", "ADVANCE_QUEUE"]:
+                subseq.append(window)
+
+        self.assertGreater(len(subseq), 0, "Ordered sub-events sequence not found in simulation run!")
+
+    def test_transition_based_red_light_entry_prevention(self):
+        """Szigorú átmenet-alapú teszt: ellenőrzi járműveket lépésről lépésre, hogy piros alatt nem lépnek be."""
+        steps = list(self.plugin.get_steps())
+        for i in range(1, len(steps)):
+            prev_step = steps[i - 1]
+            cur_step = steps[i]
+            prev_vehicles = prev_step.extra["vehicles"]
+            cur_vehicles = cur_step.extra["vehicles"]
+            cur_lights = cur_step.extra["lights"]
+
+            # Ha É-D piros (és nincs zöld/sárga)
+            if cur_lights["ns"]["red"] and not cur_lights["ns"]["green"] and not cur_lights["ns"]["yellow"]:
+                for d in ["north", "south"]:
+                    for pv in prev_vehicles[d]:
+                        if pv["status"] in ("waiting", "queued"):
+                            cv = next(v for v in cur_vehicles[d] if v["id"] == pv["id"])
+                            self.assertNotEqual(cv["status"], "crossing", f"Vehicle {cv['id']} entered intersection under RED!")
+                            self.assertEqual(cv["crossing_progress"], 0)
+
+            # Ha K-Ny piros (és nincs zöld/sárga)
+            if cur_lights["ew"]["red"] and not cur_lights["ew"]["green"] and not cur_lights["ew"]["yellow"]:
+                for d in ["east", "west"]:
+                    for pv in prev_vehicles[d]:
+                        if pv["status"] in ("waiting", "queued"):
+                            cv = next(v for v in cur_vehicles[d] if v["id"] == pv["id"])
+                            self.assertNotEqual(cv["status"], "crossing", f"Vehicle {cv['id']} entered intersection under RED!")
+                            self.assertEqual(cv["crossing_progress"], 0)
 
     def test_no_conflicting_green_signals(self):
         """Kritikus jelzőlámpa teszt: merőleges irányok sosem kaphatnak egyszerre zöldet."""
