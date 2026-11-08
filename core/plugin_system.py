@@ -31,8 +31,18 @@ class AlgorithmPluginBase:
     def get_supported_languages(self) -> List[str]:
         return list(self.codes.keys()) if hasattr(self, 'codes') else []
 
+    def create_visualizer(self):
+        """Opcionális egyedi vizualizációs widget (PySide6 QWidget). Ha None, ArrayViewerWidget használatos."""
+        return None
+
 
 FEATURE_MAPPINGS: Dict[str, str] = {
+    # Simulation & Traffic Light
+    "traffic_light": "simulation",
+    "traffic_intersection": "simulation",
+    "traffic": "simulation",
+    "simulation": "simulation",
+
     # Sorting
     "bubble": "sorting",
     "bubble_sort": "sorting",
