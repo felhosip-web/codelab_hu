@@ -2,18 +2,25 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from PySide6.QtWidgets import QApplication
+try:
+    from PySide6.QtWidgets import QApplication
+    from ui.traffic_intersection_widget import IntersectionCanvasWidget, TrafficIntersectionViewerWidget
+    HAS_QT = True
+except ImportError:
+    HAS_QT = False
 
 from core.engine import Engine
 from core.step import VisualizationStep
 from plugins.traffic_light.plugin import TrafficLightPlugin, TrafficIntersectionPlugin
-from ui.traffic_intersection_widget import IntersectionCanvasWidget, TrafficIntersectionViewerWidget
 
 
 class TestTrafficRegressions(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QApplication.instance() or QApplication([])
+        if HAS_QT:
+            cls.app = QApplication.instance() or QApplication([])
+        else:
+            cls.app = None
 
     def test_restore_parameters_only_for_matching_plugin(self):
         for operation in ('load_state', 'undo', 'redo'):
@@ -48,6 +55,7 @@ class TestTrafficRegressions(unittest.TestCase):
             for countdown in phases.values():
                 self.assertEqual(countdown, list(range(countdown[0], 0, -1)))
 
+    @unittest.skipUnless(HAS_QT, "PySide6 required")
     def test_empty_step_clears_canvas_and_dashboard(self):
         widget = TrafficIntersectionViewerWidget()
         widget.update_state(next(TrafficIntersectionPlugin().get_steps()))
@@ -64,6 +72,7 @@ class TestTrafficRegressions(unittest.TestCase):
         self.assertEqual(widget.canvas.right_of_way, 'NORTH_SOUTH')
         widget.deleteLater()
 
+    @unittest.skipUnless(HAS_QT, "PySide6 required")
     def test_six_car_queues_fit_canvas(self):
         widget = TrafficIntersectionViewerWidget()
         canvas = widget.canvas
