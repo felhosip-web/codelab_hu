@@ -244,7 +244,6 @@ class TrafficLightPlugin(AlgorithmPluginBase):
         yellow_sec = max(1, int(self.params.get("yellow_duration") or 1))
         total_cycles = max(1, int(self.params.get("cycles") or 2))
 
-        # Initial step
         yield VisualizationStep(
             explanation="🚦 Jelzőlámpa rendszer inicializálva. Készen áll a ciklus indítására.",
             code_line=self.get_line_for_tag("Python", "INIT"),
@@ -334,7 +333,6 @@ class TrafficLightPlugin(AlgorithmPluginBase):
                         }
                     )
 
-        # Completed step
         yield VisualizationStep(
             explanation=f"✅ Jelzőlámpa szimuláció befejeződött: {total_cycles} ciklus sikeresen lefutott.",
             code_line=self.get_line_for_tag("Python", "COMPLETE"),
@@ -365,59 +363,74 @@ RAW_CODE_TEMPLATES_P2: Dict[str, str] = {
 intersection = init_intersection(queues=vehicles_count)  # [TAG:INIT]
 
 for cycle in range(1, total_cycles + 1):  # [TAG:LOOP_START]
-    # 1. Észak-Dél ZÖLD / Kelet-Nyugat PIROS
-    set_lights(ns="GREEN", ew="RED", duration=ns_green_sec)  # [TAG:NS_GREEN]
-    # 2. Észak-Dél SÁRGA / Kelet-Nyugat PIROS
-    set_lights(ns="YELLOW", ew="RED", duration=yellow_sec)  # [TAG:NS_YELLOW]
-    # 3. Biztonsági kiürítés: Minden irány PIROS
-    set_lights(ns="RED", ew="RED", duration=all_red_sec)  # [TAG:CLEARANCE_1]
-    # 4. Észak-Dél PIROS / Kelet-Nyugat ZÖLD
-    set_lights(ns="RED", ew="GREEN", duration=ew_green_sec)  # [TAG:EW_GREEN]
-    # 5. Észak-Dél PIROS / Kelet-Nyugat SÁRGA
-    set_lights(ns="RED", ew="YELLOW", duration=yellow_sec)  # [TAG:EW_YELLOW]
-    # 6. Biztonsági kiürítés: Minden irány PIROS
-    set_lights(ns="RED", ew="RED", duration=all_red_sec)  # [TAG:CLEARANCE_2]
+    # Fázisok végrehajtása (É-D zöld, É-D sárga, kiürítés, K-Ny zöld, K-Ny sárga, kiürítés)
+    for phase in get_phases(cycle):
+        set_traffic_signals(ns=phase.ns_signal, ew=phase.ew_signal)  # [TAG:SET_SIGNALS]
+        for sec in range(phase.duration, 0, -1):
+            # 1. Kereszteződésben lévő járművek továbbhaladása és távozása
+            advance_crossing_vehicles(intersection)  # [TAG:PROCESS_CROSSING]
+            # 2. Ütközésmentesség ellenőrzése a belépés előtt
+            has_conflict = check_intersection_conflict(intersection, phase.active_direction)  # [TAG:CHECK_CONFLICT]
+            if not has_conflict and phase.is_green:
+                # 3. Zöld jelzés esetén a sor elején álló jármű behajtása
+                start_waiting_vehicle(intersection, phase.active_direction)  # [TAG:START_VEHICLES]
+                # 4. Mögötte álló járműsor előreléptetése a stopvonal felé
+                advance_approach_queue(intersection, phase.active_direction)  # [TAG:ADVANCE_QUEUE]
+            else:
+                # 5. Sárga/piros esetén felkészülés és biztonsági kiürítés
+                clear_or_hold_vehicles(intersection)  # [TAG:CLEAR_INTERSECTION]
 
-finish_simulation()  # [TAG:COMPLETE]
+finish_simulation(intersection)  # [TAG:COMPLETE]
 """,
     "C++": """// Oktatási Kereszteződés Szimuláció (Phase 2)
 #include <iostream>
 Intersection intersection = initIntersection(vehiclesCount);  // [TAG:INIT]
 
 for (int cycle = 1; cycle <= totalCycles; ++cycle) {  // [TAG:LOOP_START]
-    // 1. Észak-Dél ZÖLD / Kelet-Nyugat PIROS
-    setLights(SIGNAL_GREEN, SIGNAL_RED, nsGreenSec);  // [TAG:NS_GREEN]
-    // 2. Észak-Dél SÁRGA / Kelet-Nyugat PIROS
-    setLights(SIGNAL_YELLOW, SIGNAL_RED, yellowSec);  // [TAG:NS_YELLOW]
-    // 3. Biztonsági kiürítés: Minden irány PIROS
-    setLights(SIGNAL_RED, SIGNAL_RED, allRedSec);  // [TAG:CLEARANCE_1]
-    // 4. Észak-Dél PIROS / Kelet-Nyugat ZÖLD
-    setLights(SIGNAL_RED, SIGNAL_GREEN, ewGreenSec);  // [TAG:EW_GREEN]
-    // 5. Észak-Dél PIROS / Kelet-Nyugat SÁRGA
-    setLights(SIGNAL_RED, SIGNAL_YELLOW, yellowSec);  // [TAG:EW_YELLOW]
-    // 6. Biztonsági kiürítés: Minden irány PIROS
-    setLights(SIGNAL_RED, SIGNAL_RED, allRedSec);  // [TAG:CLEARANCE_2]
+    for (Phase phase : getPhases(cycle)) {
+        setTrafficSignals(phase.nsSignal, phase.ewSignal);  // [TAG:SET_SIGNALS]
+        for (int sec = phase.duration; sec > 0; --sec) {
+            // 1. Kereszteződésben lévő járművek továbbhaladása és távozása
+            advanceCrossingVehicles(intersection);  // [TAG:PROCESS_CROSSING]
+            // 2. Ütközésmentesség ellenőrzése a belépés előtt
+            bool hasConflict = checkIntersectionConflict(intersection, phase.activeDirection);  // [TAG:CHECK_CONFLICT]
+            if (!hasConflict && phase.isGreen) {
+                // 3. Zöld jelzés esetén a sor elején álló jármű behajtása
+                startWaitingVehicle(intersection, phase.activeDirection);  // [TAG:START_VEHICLES]
+                // 4. Mögötte álló járműsor előreléptetése a stopvonal felé
+                advanceApproachQueue(intersection, phase.activeDirection);  // [TAG:ADVANCE_QUEUE]
+            } else {
+                // 5. Sárga/piros esetén felkészülés és biztonsági kiürítés
+                clearOrHoldVehicles(intersection);  // [TAG:CLEAR_INTERSECTION]
+            }
+        }
+    }
 }
-finishSimulation();  // [TAG:COMPLETE]
+finishSimulation(intersection);  // [TAG:COMPLETE]
 """,
     "C": """/* Oktatási Kereszteződés Szimuláció (Phase 2) */
 #include <stdio.h>
-int cycle;
 init_intersection(vehicles_count);  /* [TAG:INIT] */
 
 for (cycle = 1; cycle <= total_cycles; cycle++) {  /* [TAG:LOOP_START] */
-    /* 1. Észak-Dél ZÖLD / Kelet-Nyugat PIROS */
-    set_lights(SIG_GREEN, SIG_RED, ns_green_sec);  /* [TAG:NS_GREEN] */
-    /* 2. Észak-Dél SÁRGA / Kelet-Nyugat PIROS */
-    set_lights(SIG_YELLOW, SIG_RED, yellow_sec);  /* [TAG:NS_YELLOW] */
-    /* 3. Biztonsági kiürítés: Minden irány PIROS */
-    set_lights(SIG_RED, SIG_RED, all_red_sec);  /* [TAG:CLEARANCE_1] */
-    /* 4. Észak-Dél PIROS / Kelet-Nyugat ZÖLD */
-    set_lights(SIG_RED, SIG_GREEN, ew_green_sec);  /* [TAG:EW_GREEN] */
-    /* 5. Észak-Dél PIROS / Kelet-Nyugat SÁRGA */
-    set_lights(SIG_RED, SIG_YELLOW, yellow_sec);  /* [TAG:EW_YELLOW] */
-    /* 6. Biztonsági kiürítés: Minden irány PIROS */
-    set_lights(SIG_RED, SIG_RED, all_red_sec);  /* [TAG:CLEARANCE_2] */
+    while (get_next_phase(&phase)) {
+        set_traffic_signals(phase.ns_signal, phase.ew_signal);  /* [TAG:SET_SIGNALS] */
+        for (sec = phase.duration; sec > 0; sec--) {
+            /* 1. Kereszteződésben lévő járművek továbbhaladása és távozása */
+            advance_crossing_vehicles();  /* [TAG:PROCESS_CROSSING] */
+            /* 2. Ütközésmentesség ellenőrzése a belépés előtt */
+            has_conflict = check_intersection_conflict(phase.active_dir);  /* [TAG:CHECK_CONFLICT] */
+            if (!has_conflict && phase.is_green) {
+                /* 3. Zöld jelzés esetén a sor elején álló jármű behajtása */
+                start_waiting_vehicle(phase.active_dir);  /* [TAG:START_VEHICLES] */
+                /* 4. Mögötte álló járműsor előreléptetése a stopvonal felé */
+                advance_approach_queue(phase.active_dir);  /* [TAG:ADVANCE_QUEUE] */
+            } else {
+                /* 5. Sárga/piros esetén felkészülés és biztonsági kiürítés */
+                clear_or_hold_vehicles();  /* [TAG:CLEAR_INTERSECTION] */
+            }
+        }
+    }
 }
 finish_simulation();  /* [TAG:COMPLETE] */
 """,
@@ -425,18 +438,24 @@ finish_simulation();  /* [TAG:COMPLETE] */
 CALL InitIntersection(VehiclesCount)  ' [TAG:INIT]
 
 FOR CYCLE = 1 TO TOTALCYCLES  ' [TAG:LOOP_START]
-    ' 1. Észak-Dél ZÖLD / Kelet-Nyugat PIROS
-    CALL SetLights(SIG_GREEN, SIG_RED, NsGreenSec)  ' [TAG:NS_GREEN]
-    ' 2. Észak-Dél SÁRGA / Kelet-Nyugat PIROS
-    CALL SetLights(SIG_YELLOW, SIG_RED, YellowSec)  ' [TAG:NS_YELLOW]
-    ' 3. Biztonsági kiürítés: Minden irány PIROS
-    CALL SetLights(SIG_RED, SIG_RED, AllRedSec)  ' [TAG:CLEARANCE_1]
-    ' 4. Észak-Dél PIROS / Kelet-Nyugat ZÖLD
-    CALL SetLights(SIG_RED, SIG_GREEN, EwGreenSec)  ' [TAG:EW_GREEN]
-    ' 5. Észak-Dél PIROS / Kelet-Nyugat SÁRGA
-    CALL SetLights(SIG_RED, SIG_YELLOW, YellowSec)  ' [TAG:EW_YELLOW]
-    ' 6. Biztonsági kiürítés: Minden irány PIROS
-    CALL SetLights(SIG_RED, SIG_RED, AllRedSec)  ' [TAG:CLEARANCE_2]
+    FOR PHASE_IDX = 1 TO 6
+        CALL SetTrafficSignals(PhaseNsSignal, PhaseEwSignal)  ' [TAG:SET_SIGNALS]
+        FOR SEC = PhaseDuration TO 1 STEP -1
+            ' 1. Kereszteződésben lévő járművek továbbhaladása és távozása
+            CALL AdvanceCrossingVehicles  ' [TAG:PROCESS_CROSSING]
+            ' 2. Ütközésmentesség ellenőrzése a belépés előtt
+            HasConflict = CheckIntersectionConflict(ActiveDir)  ' [TAG:CHECK_CONFLICT]
+            IF HasConflict = 0 AND PhaseIsGreen = 1 THEN
+                ' 3. Zöld jelzés esetén a sor elején álló jármű behajtása
+                CALL StartWaitingVehicle(ActiveDir)  ' [TAG:START_VEHICLES]
+                ' 4. Mögötte álló járműsor előreléptetése a stopvonal felé
+                CALL AdvanceApproachQueue(ActiveDir)  ' [TAG:ADVANCE_QUEUE]
+            ELSE
+                ' 5. Sárga/piros esetén felkészülés és biztonsági kiürítés
+                CALL ClearOrHoldVehicles  ' [TAG:CLEAR_INTERSECTION]
+            END IF
+        NEXT SEC
+    NEXT PHASE_IDX
 NEXT CYCLE
 CALL FinishSimulation  ' [TAG:COMPLETE]
 """,
@@ -446,18 +465,24 @@ public class TrafficIntersection {
         initIntersection(vehiclesCount);  // [TAG:INIT]
 
         for (int cycle = 1; cycle <= totalCycles; cycle++) {  // [TAG:LOOP_START]
-            // 1. Észak-Dél ZÖLD / Kelet-Nyugat PIROS
-            setLights(Signal.GREEN, Signal.RED, nsGreenSec);  // [TAG:NS_GREEN]
-            // 2. Észak-Dél SÁRGA / Kelet-Nyugat PIROS
-            setLights(Signal.YELLOW, Signal.RED, yellowSec);  // [TAG:NS_YELLOW]
-            // 3. Biztonsági kiürítés: Minden irány PIROS
-            setLights(Signal.RED, Signal.RED, allRedSec);  // [TAG:CLEARANCE_1]
-            // 4. Észak-Dél PIROS / Kelet-Nyugat ZÖLD
-            setLights(Signal.RED, Signal.GREEN, ewGreenSec);  // [TAG:EW_GREEN]
-            // 5. Észak-Dél PIROS / Kelet-Nyugat SÁRGA
-            setLights(Signal.RED, Signal.YELLOW, yellowSec);  // [TAG:EW_YELLOW]
-            // 6. Biztonsági kiürítés: Minden irány PIROS
-            setLights(Signal.RED, Signal.RED, allRedSec);  // [TAG:CLEARANCE_2]
+            for (Phase phase : getPhases(cycle)) {
+                setTrafficSignals(phase.nsSignal, phase.ewSignal);  // [TAG:SET_SIGNALS]
+                for (int sec = phase.duration; sec > 0; sec--) {
+                    // 1. Kereszteződésben lévő járművek továbbhaladása és távozása
+                    advanceCrossingVehicles(intersection);  // [TAG:PROCESS_CROSSING]
+                    // 2. Ütközésmentesség ellenőrzése a belépés előtt
+                    boolean hasConflict = checkIntersectionConflict(phase.activeDir);  // [TAG:CHECK_CONFLICT]
+                    if (!hasConflict && phase.isGreen) {
+                        // 3. Zöld jelzés esetén a sor elején álló jármű behajtása
+                        startWaitingVehicle(phase.activeDir);  // [TAG:START_VEHICLES]
+                        // 4. Mögötte álló járműsor előreléptetése a stopvonal felé
+                        advanceApproachQueue(phase.activeDir);  // [TAG:ADVANCE_QUEUE]
+                    } else {
+                        // 5. Sárga/piros esetén felkészülés és biztonsági kiürítés
+                        clearOrHoldVehicles(intersection);  // [TAG:CLEAR_INTERSECTION]
+                    }
+                }
+            }
         }
         finishSimulation();  // [TAG:COMPLETE]
     }
@@ -465,24 +490,31 @@ public class TrafficIntersection {
 """,
     "Pascal": """// Oktatási Kereszteződés Szimuláció (Phase 2)
 program TrafficIntersectionSimulation;
-var
-  cycle: Integer;
 begin
   InitIntersection(vehiclesCount);  // [TAG:INIT]
   for cycle := 1 to totalCycles do  // [TAG:LOOP_START]
   begin
-    // 1. Észak-Dél ZÖLD / Kelet-Nyugat PIROS
-    SetLights(sigGreen, sigRed, nsGreenSec);  // [TAG:NS_GREEN]
-    // 2. Észak-Dél SÁRGA / Kelet-Nyugat PIROS
-    SetLights(sigYellow, sigRed, yellowSec);  // [TAG:NS_YELLOW]
-    // 3. Biztonsági kiürítés: Minden irány PIROS
-    SetLights(sigRed, sigRed, allRedSec);  // [TAG:CLEARANCE_1]
-    // 4. Észak-Dél PIROS / Kelet-Nyugat ZÖLD
-    SetLights(sigRed, sigGreen, ewGreenSec);  // [TAG:EW_GREEN]
-    // 5. Észak-Dél PIROS / Kelet-Nyugat SÁRGA
-    SetLights(sigRed, sigYellow, yellowSec);  // [TAG:EW_YELLOW]
-    // 6. Biztonsági kiürítés: Minden irány PIROS
-    SetLights(sigRed, sigRed, allRedSec);  // [TAG:CLEARANCE_2]
+    for phaseIdx := 1 to 6 do
+    begin
+      SetTrafficSignals(phase.nsSignal, phase.ewSignal);  // [TAG:SET_SIGNALS]
+      for sec := phase.duration downto 1 do
+      begin
+        // 1. Kereszteződésben lévő járművek továbbhaladása és távozása
+        AdvanceCrossingVehicles(intersection);  // [TAG:PROCESS_CROSSING]
+        // 2. Ütközésmentesség ellenőrzése a belépés előtt
+        hasConflict := CheckIntersectionConflict(phase.activeDir);  // [TAG:CHECK_CONFLICT]
+        if (not hasConflict) and phase.isGreen then
+        begin
+          // 3. Zöld jelzés esetén a sor elején álló jármű behajtása
+          StartWaitingVehicle(phase.activeDir);  // [TAG:START_VEHICLES]
+          // 4. Mögötte álló járműsor előreléptetése a stopvonal felé
+          AdvanceApproachQueue(phase.activeDir);  // [TAG:ADVANCE_QUEUE]
+        end
+        else
+          // 5. Sárga/piros esetén felkészülés és biztonsági kiürítés
+          ClearOrHoldVehicles(intersection);  // [TAG:CLEAR_INTERSECTION]
+      end;
+    end;
   end;
   FinishSimulation();  // [TAG:COMPLETE]
 end.
@@ -579,12 +611,16 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
     def get_steps(self, arr=None) -> Generator[VisualizationStep, None, None]:
         """
         Determinisztikus lépésgenerátor a négyirányú útkereszteződéshez.
-        Minden lépés 1 másodperces oktatási állapotot modellez:
-        - Jelzőlámpa állapotok mindkét merőleges irányban (Észak-Dél, Kelet-Nyugat).
-        - Járművek diszkrét pozíciói (várakozás sorban, áthaladás a zöld jelzésnél, megállás pirosnál).
-        - Ütközés- és konfliktusmentesség garantált: merőleges irányok soha nem kapnak egyszerre ZÖLD-et,
-          és egyszerre nem léphetnek be a kereszteződés belső magjába.
-        - Forráskód-sor követés és magyar nyelvű oktatási magyarázat.
+        Minden lépés pontos szemantikai művelethez és forráskód-sorhoz rendelt:
+        - INIT: Inicializálás
+        - LOOP_START: Ciklusfej
+        - SET_SIGNALS: Jelzőlámpák összehangolt beállítása a fázis kezdetén
+        - PROCESS_CROSSING: A csomópontban lévő járművek továbbhaladása és távozása
+        - CHECK_CONFLICT: Ütközésmentesség ellenőrzése
+        - START_VEHICLES: Zöld jelzésnél a várakozó jármű belépése a kereszteződésbe
+        - ADVANCE_QUEUE: A járműsor előrelépése
+        - CLEAR_INTERSECTION: Sárga/piros biztonsági kiürítés
+        - COMPLETE: Szimuláció befejezése
         """
         ns_green_sec = max(1, int(self.params.get("ns_green_duration") or 3))
         ew_green_sec = max(1, int(self.params.get("ew_green_duration") or 3))
@@ -621,8 +657,9 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
         }
         w_ns, w_ew, passed_cnt = count_active_vehicles()
 
+        # 1. INIT LÉPÉS
         yield VisualizationStep(
-            explanation="🚦 Négyirányú kereszteződés inicializálva. Mindkét irányban piros jelzés, járművek a sorban.",
+            explanation="🚦 Négyirányú kereszteződés inicializálva: járműsorok felálltak a stopvonalak mögött.",
             code_line=self.get_line_for_tag("Python", "INIT"),
             metrics={"comparisons": 0, "pass_num": 0, "remaining_time": 0, "cycle": 0},
             array=[w_ns, w_ew, passed_cnt],
@@ -631,6 +668,7 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                 "tag": "INIT",
                 "phase": self.PHASE_INIT,
                 "phase_hu": self.PHASE_NAMES_HU[self.PHASE_INIT],
+                "operation": "INIT",
                 "right_of_way": "NONE",
                 "right_of_way_hu": "Nincs elsőbbség (Minden irány áll)",
                 "lights": init_lights,
@@ -647,8 +685,9 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
         total_step_counter = 0
 
         for cycle_idx in range(1, total_cycles + 1):
+            # 2. CIKLUSFEJ LÉPÉS
             yield VisualizationStep(
-                explanation=f"🔄 {cycle_idx}. forgalmi ciklus kezdete ({cycle_idx}/{total_cycles}). Ciklus kiértékelése.",
+                explanation=f"🔄 {cycle_idx}. forgalmi ciklus indítása ({cycle_idx}/{total_cycles}). Ciklus kiértékelése.",
                 code_line=self.get_line_for_tag("Python", "LOOP_START"),
                 metrics={"comparisons": total_step_counter, "pass_num": cycle_idx, "remaining_time": 0, "cycle": cycle_idx},
                 array=[w_ns, w_ew, passed_cnt],
@@ -657,6 +696,7 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                     "tag": "LOOP_START",
                     "phase": "CYCLE_START",
                     "phase_hu": f"{cycle_idx}. Ciklus",
+                    "operation": "LOOP_START",
                     "right_of_way": "NONE",
                     "right_of_way_hu": "Ciklusváltás folyamatban",
                     "lights": init_lights,
@@ -673,79 +713,75 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
             phase_definitions = [
                 (
                     self.PHASE_NS_GREEN,
-                    "NS_GREEN",
                     {"red": False, "yellow": False, "green": True},
                     {"red": True, "yellow": False, "green": False},
                     ns_green_sec,
                     "NORTH_SOUTH",
                     "Észak-Dél (Szabad út)",
-                    "🟢 Észak-Dél ZÖLD: Az É-D irányú járművek áthaladnak, K-Ny várakozik a stopvonalnál.",
                     ["north", "south"],
+                    True,
                 ),
                 (
                     self.PHASE_NS_YELLOW,
-                    "NS_YELLOW",
                     {"red": False, "yellow": True, "green": False},
                     {"red": True, "yellow": False, "green": False},
                     yellow_sec,
                     "NORTH_SOUTH",
                     "Észak-Dél (Átmenet / Lassítás)",
-                    "🟡 Észak-Dél SÁRGA: Felkészülés a megállásra, a csomópontban lévő járművek kiürítenek.",
                     [],
+                    False,
                 ),
                 (
                     self.PHASE_CLEARANCE_1,
-                    "CLEARANCE_1",
                     {"red": True, "yellow": False, "green": False},
                     {"red": True, "yellow": False, "green": False},
                     all_red_sec,
                     "NONE",
                     "Biztonsági kiürítés (Mindkét irány PIROS)",
-                    "⛔ Biztonsági kiürítés: Minden lámpa PIROS, a kereszteződés teljes biztonsággal kiürül.",
                     [],
+                    False,
                 ),
                 (
                     self.PHASE_EW_GREEN,
-                    "EW_GREEN",
                     {"red": True, "yellow": False, "green": False},
                     {"red": False, "yellow": False, "green": True},
                     ew_green_sec,
                     "EAST_WEST",
                     "Kelet-Nyugat (Szabad út)",
-                    "🟢 Kelet-Nyugat ZÖLD: A K-Ny irányú járművek áthaladnak, É-D várakozik a stopvonalnál.",
                     ["east", "west"],
+                    True,
                 ),
                 (
                     self.PHASE_EW_YELLOW,
-                    "EW_YELLOW",
                     {"red": True, "yellow": False, "green": False},
                     {"red": False, "yellow": True, "green": False},
                     yellow_sec,
                     "EAST_WEST",
                     "Kelet-Nyugat (Átmenet / Lassítás)",
-                    "🟡 Kelet-Nyugat SÁRGA: Felkészülés a megállásra, a megkezdett áthaladások befejezése.",
                     [],
+                    False,
                 ),
                 (
                     self.PHASE_CLEARANCE_2,
-                    "CLEARANCE_2",
                     {"red": True, "yellow": False, "green": False},
                     {"red": True, "yellow": False, "green": False},
                     all_red_sec,
                     "NONE",
                     "Biztonsági kiürítés (Mindkét irány PIROS)",
-                    "⛔ Biztonsági kiürítés: Minden lámpa PIROS, új ciklus felkészülése.",
                     [],
+                    False,
                 ),
             ]
 
-            for phase_id, tag, ns_light, ew_light, duration, row_id, row_hu, desc_base, moving_dirs in phase_definitions:
+            for phase_id, ns_light, ew_light, duration, row_id, row_hu, moving_dirs, is_green in phase_definitions:
                 cur_lights = {"ns": dict(ns_light), "ew": dict(ew_light)}
                 init_lights = cur_lights
 
                 for sec in range(duration, 0, -1):
                     total_step_counter += 1
 
+                    # 1. Lépés: Kereszteződésben lévő járművek haladása
+                    crossing_present = any(v["status"] == "crossing" for d in vehicles for v in vehicles[d])
                     for d in ["north", "south", "east", "west"]:
                         for v in vehicles[d]:
                             if v["status"] == "crossing":
@@ -753,16 +789,23 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                                 if v["crossing_progress"] >= 2:
                                     v["status"] = "departed"
 
+                    # 2. Ütközésmentesség ellenőrzése
+                    conflicts_found = False
                     for d in moving_dirs:
                         conflicting_dirs = ["east", "west"] if d in ["north", "south"] else ["north", "south"]
-                        conflict_present = any(
-                            cv["status"] == "crossing" for cd in conflicting_dirs for cv in vehicles[cd]
-                        )
-                        if not conflict_present:
+                        if any(cv["status"] == "crossing" for cd in conflicting_dirs for cv in vehicles[cd]):
+                            conflicts_found = True
+                            break
+
+                    # 3. Járművek indítása és sorok előrelépése
+                    vehicles_started = False
+                    if is_green and not conflicts_found:
+                        for d in moving_dirs:
                             for v in vehicles[d]:
                                 if v["status"] == "waiting" and v["queue_pos"] == 0:
                                     v["status"] = "crossing"
                                     v["crossing_progress"] = 1
+                                    vehicles_started = True
                                     break
                             for v in vehicles[d]:
                                 if v["status"] == "queued":
@@ -771,11 +814,38 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                                         v["status"] = "waiting"
 
                     w_ns, w_ew, passed_cnt = count_active_vehicles()
-                    explanation = f"{desc_base} Hátralévő idő: {sec} mp."
+
+                    # Szemantikai művelet meghatározása a lépéshez:
+                    # - Ha új fázis legelső másodperce és nincs járműindítás: SET_SIGNALS
+                    # - Ha zöld és indult jármű: START_VEHICLES
+                    # - Ha bent haladt át jármű és nem zöld: PROCESS_CROSSING / CLEAR_INTERSECTION
+                    # - Ha zöld de van konfliktus: CHECK_CONFLICT
+                    if is_green:
+                        if vehicles_started:
+                            semantic_tag = "START_VEHICLES"
+                            action_desc = f"🚗 Zöld jelzés: Elsőbbséget élvező járművek behajtanak a csomópontba ({row_hu})."
+                        elif conflicts_found:
+                            semantic_tag = "CHECK_CONFLICT"
+                            action_desc = f"⚠️ Ütközésvédelem: Belépés felfüggesztve, a csomópont kiürítésre vár."
+                        elif crossing_present:
+                            semantic_tag = "PROCESS_CROSSING"
+                            action_desc = f"🛣️ Járművek haladnak át a kereszteződésen és biztonságosan elhagyják."
+                        else:
+                            semantic_tag = "SET_SIGNALS"
+                            action_desc = f"🟢 Jelzőlámpa váltás: {row_hu}. Szabad az út."
+                    else:
+                        if crossing_present:
+                            semantic_tag = "PROCESS_CROSSING"
+                            action_desc = f"🚗 Áthaladó járművek kiürítik a kereszteződést a lámpaváltás előtt."
+                        else:
+                            semantic_tag = "CLEAR_INTERSECTION" if "kiürítés" in row_hu.lower() else "SET_SIGNALS"
+                            action_desc = f"⛔ Jelzőlámpa állapot: {row_hu}. Stopvonalak előtt várakozás."
+
+                    explanation = f"{action_desc} Hátralévő fázisidő: {sec} mp."
 
                     yield VisualizationStep(
                         explanation=explanation,
-                        code_line=self.get_line_for_tag("Python", tag),
+                        code_line=self.get_line_for_tag("Python", semantic_tag),
                         metrics={
                             "comparisons": total_step_counter,
                             "pass_num": cycle_idx,
@@ -785,9 +855,10 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                         array=[w_ns, w_ew, passed_cnt],
                         key=self.PHASE_NAMES_HU[phase_id],
                         extra={
-                            "tag": tag,
+                            "tag": semantic_tag,
                             "phase": phase_id,
                             "phase_hu": self.PHASE_NAMES_HU[phase_id],
+                            "operation": semantic_tag,
                             "right_of_way": row_id,
                             "right_of_way_hu": row_hu,
                             "lights": cur_lights,
@@ -801,7 +872,7 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                         }
                     )
 
-        # Completed step
+        # 3. COMPLETE LÉPÉS
         yield VisualizationStep(
             explanation=f"✅ Kereszteződés szimuláció befejeződött: {total_cycles} ciklus sikeresen lefutott, forgalom koordinálva.",
             code_line=self.get_line_for_tag("Python", "COMPLETE"),
@@ -812,6 +883,7 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                 "tag": "COMPLETE",
                 "phase": self.PHASE_COMPLETED,
                 "phase_hu": self.PHASE_NAMES_HU[self.PHASE_COMPLETED],
+                "operation": "COMPLETE",
                 "right_of_way": "NONE",
                 "right_of_way_hu": "Szimuláció véget ért",
                 "lights": {

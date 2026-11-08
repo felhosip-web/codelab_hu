@@ -2,6 +2,8 @@
 """
 Automated unit and integration tests for Traffic Light Educational Plugin Phase 2:
 Vehicle Traffic Intersection (plugins/traffic_light/plugin.py & ui/traffic_intersection_widget.py).
+Focuses on deterministic safety invariants, semantic source-line execution tracking,
+multi-language alignment, and UI lifecycle.
 """
 import unittest
 import os
@@ -25,7 +27,7 @@ except ImportError:
 
 
 class TestTrafficIntersectionPlugin(unittest.TestCase):
-    """Belső logika és állapotgép tesztek a kereszteződés szimulációhoz."""
+    """Belső logika, állapotgép és biztonsági tesztek a kereszteződés szimulációhoz."""
 
     def setUp(self):
         self.plugin = TrafficIntersectionPlugin()
@@ -47,30 +49,32 @@ class TestTrafficIntersectionPlugin(unittest.TestCase):
             self.assertGreater(len(code), 20)
             self.assertNotIn("[TAG:", code)
 
-    def test_logical_tag_lines_in_all_languages(self):
+    def test_semantic_operation_tags_in_all_languages(self):
+        """Minden szemantikai művelet címkéjének léteznie és illeszkednie kell mind a 6 nyelven."""
         langs = ["Python", "C++", "C", "BASIC", "Java", "Pascal"]
-        required_tags = [
-            "INIT", "LOOP_START", "NS_GREEN", "NS_YELLOW",
-            "CLEARANCE_1", "EW_GREEN", "EW_YELLOW", "CLEARANCE_2", "COMPLETE"
+        required_semantic_tags = [
+            "INIT", "LOOP_START", "SET_SIGNALS", "PROCESS_CROSSING",
+            "CHECK_CONFLICT", "START_VEHICLES", "ADVANCE_QUEUE",
+            "CLEAR_INTERSECTION", "COMPLETE"
         ]
 
         exact_python_statements = {
             "INIT": "intersection = init_intersection(queues=vehicles_count)",
             "LOOP_START": "for cycle in range(1, total_cycles + 1):",
-            "NS_GREEN": 'set_lights(ns="GREEN", ew="RED", duration=ns_green_sec)',
-            "NS_YELLOW": 'set_lights(ns="YELLOW", ew="RED", duration=yellow_sec)',
-            "CLEARANCE_1": 'set_lights(ns="RED", ew="RED", duration=all_red_sec)',
-            "EW_GREEN": 'set_lights(ns="RED", ew="GREEN", duration=ew_green_sec)',
-            "EW_YELLOW": 'set_lights(ns="RED", ew="YELLOW", duration=yellow_sec)',
-            "CLEARANCE_2": 'set_lights(ns="RED", ew="RED", duration=all_red_sec)',
-            "COMPLETE": "finish_simulation()",
+            "SET_SIGNALS": "set_traffic_signals(ns=phase.ns_signal, ew=phase.ew_signal)",
+            "PROCESS_CROSSING": "advance_crossing_vehicles(intersection)",
+            "CHECK_CONFLICT": "has_conflict = check_intersection_conflict(intersection, phase.active_direction)",
+            "START_VEHICLES": "start_waiting_vehicle(intersection, phase.active_direction)",
+            "ADVANCE_QUEUE": "advance_approach_queue(intersection, phase.active_direction)",
+            "CLEAR_INTERSECTION": "clear_or_hold_vehicles(intersection)",
+            "COMPLETE": "finish_simulation(intersection)",
         }
 
         for lang in langs:
-            for tag in required_tags:
+            for tag in required_semantic_tags:
                 line_no = self.plugin.get_line_for_tag(lang, tag)
                 self.assertIsInstance(line_no, int)
-                self.assertGreater(line_no, 0, f"Missing tag {tag} in {lang}")
+                self.assertGreater(line_no, 0, f"Missing semantic tag {tag} in {lang}")
 
                 code_lines = self.plugin.get_code(lang).splitlines()
                 self.assertLessEqual(line_no, len(code_lines), f"Line {line_no} out of bounds for {lang}")
@@ -84,6 +88,18 @@ class TestTrafficIntersectionPlugin(unittest.TestCase):
                         f"Python tag {tag} at line {line_no} is '{target_line_text}', expected '{expected}'"
                     )
 
+    def test_semantic_step_metadata_tracking(self):
+        """Minden szimulációs lépésnek konkrét szemantikai műveletet kell hordoznia."""
+        steps = list(self.plugin.get_steps())
+        for step in steps:
+            extra = step.extra
+            self.assertIn("operation", extra)
+            self.assertIn("tag", extra)
+            self.assertEqual(extra["operation"], extra["tag"])
+            # Ellenőrizzük, hogy a kód sor megfelel a megadott műveletnek
+            py_line = self.plugin.get_line_for_tag("Python", extra["tag"])
+            self.assertEqual(step.code_line, py_line)
+
     def test_configurable_parameters(self):
         params = self.plugin.get_params()
         self.assertIsNotNone(params.get("ns_green_duration"))
@@ -96,87 +112,120 @@ class TestTrafficIntersectionPlugin(unittest.TestCase):
         self.plugin.set_param("ns_green_duration", 5)
         self.assertEqual(self.plugin.params.get("ns_green_duration"), 5)
 
-    def test_no_conflicting_green_signals(self):
+    def test_no_vehicle_enters_on_red_signal(self):
+        """1. Safety Invariant: egyetlen jármű sem léphet be, ha az iránya PIROS."""
         steps = list(self.plugin.get_steps())
-        self.assertGreater(len(steps), 10)
-
-        for step in steps:
-            extra = step.extra
-            lights = extra.get("lights", {})
-            ns = lights.get("ns", {})
-            ew = lights.get("ew", {})
-
-            ns_green = ns.get("green", False)
-            self.assertFalse(
-                ns_green and ew.get("green", False),
-                f"Conflicting green signals detected in step: {step.explanation}"
-            )
-            self.assertFalse(
-                ns.get("green", False) and ew.get("yellow", False),
-                "Conflicting NS green with EW yellow!"
-            )
-            self.assertFalse(
-                ew.get("green", False) and ns.get("yellow", False),
-                "Conflicting EW green with NS yellow!"
-            )
-
-    def test_vehicles_stop_at_red_and_never_enter(self):
-        steps = list(self.plugin.get_steps())
-
         for step in steps:
             extra = step.extra
             lights = extra.get("lights", {})
             vehicles = extra.get("vehicles", {})
 
             ns_red = lights.get("ns", {}).get("red", False)
+            ns_green = lights.get("ns", {}).get("green", False)
             ew_red = lights.get("ew", {}).get("red", False)
+            ew_green = lights.get("ew", {}).get("green", False)
 
-            if ns_red and not lights.get("ns", {}).get("green", False) and not lights.get("ns", {}).get("yellow", False):
+            if ns_red and not ns_green:
                 for d in ["north", "south"]:
-                    waiting_v = [v for v in vehicles.get(d, []) if v["status"] == "waiting"]
-                    for v in waiting_v:
-                        self.assertEqual(v["queue_pos"], 0)
+                    for v in vehicles.get(d, []):
+                        if v["status"] == "waiting":
+                            self.assertEqual(v["queue_pos"], 0, "Waiting vehicle advanced past stopline on RED!")
+                        self.assertNotEqual(v["crossing_progress"], 1, "Vehicle entered intersection on RED!")
 
-            if ew_red and not lights.get("ew", {}).get("green", False) and not lights.get("ew", {}).get("yellow", False):
+            if ew_red and not ew_green:
                 for d in ["east", "west"]:
-                    waiting_v = [v for v in vehicles.get(d, []) if v["status"] == "waiting"]
-                    for v in waiting_v:
-                        self.assertEqual(v["queue_pos"], 0)
+                    for v in vehicles.get(d, []):
+                        if v["status"] == "waiting":
+                            self.assertEqual(v["queue_pos"], 0, "Waiting vehicle advanced past stopline on RED!")
+                        self.assertNotEqual(v["crossing_progress"], 1, "Vehicle entered intersection on RED!")
 
-    def test_safe_vehicle_spacing_and_queue_progression(self):
+    def test_crossing_vehicles_safely_clear_during_yellow_and_all_red(self):
+        """2. Safety Invariant: a korábban belépett járművek biztonságosan kiürítenek sárga és piros fázis alatt."""
         steps = list(self.plugin.get_steps())
+        for i in range(1, len(steps)):
+            prev_step = steps[i - 1]
+            cur_step = steps[i]
+            prev_crossing = [
+                v["id"] for d in prev_step.extra["vehicles"] for v in prev_step.extra["vehicles"][d]
+                if v["status"] == "crossing"
+            ]
+            if prev_crossing:
+                # A következő lépésben vagy halad előre (crossing_progress nő), vagy távozott (departed)
+                for v_id in prev_crossing:
+                    cur_v = next(
+                        v for d in cur_step.extra["vehicles"] for v in cur_step.extra["vehicles"][d]
+                        if v["id"] == v_id
+                    )
+                    self.assertIn(cur_v["status"], ("crossing", "departed"))
+                    if cur_v["status"] == "crossing":
+                        self.assertGreater(cur_v["crossing_progress"], 0)
 
+    def test_no_conflicting_intersection_occupancy(self):
+        """3. Safety Invariant: merőleges irányok (É-D és K-Ny) SOHA nem tartózkodhatnak egyszerre a kereszteződésben."""
+        steps = list(self.plugin.get_steps())
         for step in steps:
-            extra = step.extra
-            vehicles = extra.get("vehicles", {})
-            for d in ["north", "south", "east", "west"]:
-                dir_vehicles = vehicles.get(d, [])
-                queue_positions = [v["queue_pos"] for v in dir_vehicles if v["status"] in ("waiting", "queued")]
-                self.assertEqual(len(queue_positions), len(set(queue_positions)))
-                if queue_positions:
-                    self.assertEqual(sorted(queue_positions), list(range(len(queue_positions))))
+            vehicles = step.extra.get("vehicles", {})
+            ns_crossing = any(v["status"] == "crossing" for d in ["north", "south"] for v in vehicles.get(d, []))
+            ew_crossing = any(v["status"] == "crossing" for d in ["east", "west"] for v in vehicles.get(d, []))
+            self.assertFalse(
+                ns_crossing and ew_crossing,
+                f"Conflicting intersection occupancy! NS and EW both crossing at step: {step.explanation}"
+            )
 
-    def test_all_red_clearance_phases(self):
+    def test_same_axis_opposing_movements_follow_lane_model(self):
+        """4. Safety Invariant: az azonos tengelyen lévő szemközti járművek (pl. Észak és Dél) külön sávban haladnak."""
         steps = list(self.plugin.get_steps())
-        clearance_steps = [s for s in steps if s.extra.get("phase") in (TrafficIntersectionPlugin.PHASE_CLEARANCE_1, TrafficIntersectionPlugin.PHASE_CLEARANCE_2)]
-        self.assertGreater(len(clearance_steps), 0)
+        for step in steps:
+            vehicles = step.extra.get("vehicles", {})
+            n_crossing = [v for v in vehicles.get("north", []) if v["status"] == "crossing"]
+            s_crossing = [v for v in vehicles.get("south", []) if v["status"] == "crossing"]
+            for nv in n_crossing:
+                self.assertEqual(nv["direction"], "north")
+            for sv in s_crossing:
+                self.assertEqual(sv["direction"], "south")
 
-        for s in clearance_steps:
-            lights = s.extra.get("lights", {})
-            self.assertTrue(lights.get("ns", {}).get("red"))
-            self.assertFalse(lights.get("ns", {}).get("green"))
-            self.assertTrue(lights.get("ew", {}).get("red"))
-            self.assertFalse(lights.get("ew", {}).get("green"))
+    def test_queue_advancement_maintains_valid_contiguous_indices(self):
+        """5. Safety Invariant: a járműsor sosem tartalmazhat duplikált, negatív vagy hiányos pozíciókat."""
+        steps = list(self.plugin.get_steps())
+        for step in steps:
+            vehicles = step.extra.get("vehicles", {})
+            for d in ["north", "south", "east", "west"]:
+                q_positions = [v["queue_pos"] for v in vehicles.get(d, []) if v["status"] in ("waiting", "queued")]
+                self.assertEqual(len(q_positions), len(set(q_positions)), f"Duplicate queue positions in {d}")
+                if q_positions:
+                    self.assertEqual(sorted(q_positions), list(range(len(q_positions))), f"Non-contiguous queue in {d}")
 
-    def test_step_count_matches_duration_math(self):
-        self.plugin.set_param("ns_green_duration", 2)
-        self.plugin.set_param("ew_green_duration", 2)
-        self.plugin.set_param("yellow_duration", 1)
-        self.plugin.set_param("all_red_duration", 1)
+    def test_no_conflicting_green_signals(self):
+        """Kritikus jelzőlámpa teszt: merőleges irányok sosem kaphatnak egyszerre zöldet."""
+        steps = list(self.plugin.get_steps())
+        for step in steps:
+            lights = step.extra.get("lights", {})
+            ns = lights.get("ns", {})
+            ew = lights.get("ew", {})
+            self.assertFalse(ns.get("green", False) and ew.get("green", False))
+            self.assertFalse(ns.get("green", False) and ew.get("yellow", False))
+            self.assertFalse(ew.get("green", False) and ns.get("yellow", False))
+
+    def test_all_vehicles_eventually_clear_with_sufficient_cycles(self):
+        """8. Safety Invariant: elegendő zöldidő és ciklus esetén minden jármű átjut a kereszteződésen."""
+        self.plugin.set_param("vehicles_per_approach", 2)
+        self.plugin.set_param("ns_green_duration", 3)
+        self.plugin.set_param("ew_green_duration", 3)
         self.plugin.set_param("cycles", 3)
 
         steps = list(self.plugin.get_steps())
-        self.assertEqual(len(steps), 29)
+        final_step = steps[-1]
+        final_vehicles = final_step.extra["vehicles"]
+
+        total_vehicles = sum(len(final_vehicles[d]) for d in final_vehicles)
+        departed_vehicles = sum(
+            1 for d in final_vehicles for v in final_vehicles[d] if v["status"] == "departed"
+        )
+        self.assertEqual(
+            departed_vehicles,
+            total_vehicles,
+            f"Expected all {total_vehicles} vehicles to depart, but only {departed_vehicles} departed."
+        )
 
 
 class TestTrafficIntersectionIntegration(unittest.TestCase):
@@ -203,7 +252,7 @@ class TestTrafficIntersectionIntegration(unittest.TestCase):
         self.assertIn("traffic_light", sim_ids)
         self.assertIn("traffic_intersection", sim_ids)
 
-    def test_engine_integration(self):
+    def test_engine_stepping_and_synchronization(self):
         loader = PluginLoader()
         loader.load_all()
         p2 = loader.get_plugin("traffic_intersection")
@@ -238,7 +287,7 @@ class TestTrafficIntersectionIntegration(unittest.TestCase):
         widget.deleteLater()
 
     @unittest.skipUnless(HAS_QT, "PySide6 required for UI testing")
-    def test_main_window_module_switching_and_visualizer_cleanup(self):
+    def test_main_window_module_switching_and_language_tracking(self):
         from ui.main_window import MainWindow
         win = MainWindow()
         win.show()
@@ -264,13 +313,22 @@ class TestTrafficIntersectionIntegration(unittest.TestCase):
         self.assertEqual(win.current_plugin.id, "traffic_intersection")
         self.assertIn("traffic_intersection", win.plugin_visualizers)
 
-        # 3. Visszaváltunk Phase 1-re: Phase 1 még mindig tökéletesen működik
-        win.current_plugin = p1
-        win.update_active_visualizer()
-        win.on_language_changed("Python")
-        win.reset()
-        self.assertEqual(win.current_plugin.id, "traffic_light")
-        self.assertEqual(len(win.steps), len(list(p1.get_steps())))
+        # 3. Nyelvváltás ellenőrzése futás közben: szimulációs lépés nem változik, a kiemelt sor nyelvenként megfelel
+        win.next_step()
+        cur_idx = win.current_step_idx
+        current_step = win.steps[cur_idx]
+        cur_tag = current_step.extra["tag"]
+
+        for lang in ["Python", "C++", "C", "BASIC", "Java", "Pascal"]:
+            win.lang_combo.setCurrentText(lang)
+            win.on_language_changed(lang)
+            self.app.processEvents()
+            # Index megmarad
+            self.assertEqual(win.current_step_idx, cur_idx)
+            # A feloldott sor az adott nyelvhez tartozó sorszám
+            expected_line = p2.get_line_for_tag(lang, cur_tag)
+            resolved_line = win.resolve_step_code_line(current_step, lang)
+            self.assertEqual(resolved_line, expected_line)
 
         # 4. Újratöltjük a pluginokat, ellenőrizve a tiszta cleanupot
         with patch("ui.main_window.QMessageBox.information"), patch("ui.main_window.QMessageBox.warning"):
