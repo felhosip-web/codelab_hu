@@ -91,14 +91,106 @@ class TestTrafficIntersectionPlugin(unittest.TestCase):
     def test_semantic_step_metadata_tracking(self):
         """Minden szimulációs lépésnek konkrét szemantikai műveletet kell hordoznia."""
         steps = list(self.plugin.get_steps())
+        emitted_tags = set()
         for step in steps:
             extra = step.extra
             self.assertIn("operation", extra)
             self.assertIn("tag", extra)
             self.assertEqual(extra["operation"], extra["tag"])
+            emitted_tags.add(extra["tag"])
             # Ellenőrizzük, hogy a kód sor megfelel a megadott műveletnek
             py_line = self.plugin.get_line_for_tag("Python", extra["tag"])
             self.assertEqual(step.code_line, py_line)
+
+        # Ellenőrizzük, hogy az ADVANCE_QUEUE és START_VEHICLES is kibocsátásra került
+        self.assertIn("ADVANCE_QUEUE", emitted_tags, "ADVANCE_QUEUE must be emitted when queue advances!")
+        self.assertIn("START_VEHICLES", emitted_tags, "START_VEHICLES must be emitted when a vehicle enters!")
+        self.assertIn("SET_SIGNALS", emitted_tags, "SET_SIGNALS must be emitted during signal changes!")
+        self.assertIn("PROCESS_CROSSING", emitted_tags, "PROCESS_CROSSING must be emitted during crossing traversal!")
+
+    def test_target_statements_in_all_six_languages(self):
+        """Minden nyelven ellenőrizzük a szemantikai utasítások pontos szövegét, nemcsak Pythonban."""
+        expected_fragments = {
+            "Python": {
+                "INIT": "init_intersection(queues=vehicles_count)",
+                "LOOP_START": "for cycle in range(1, total_cycles + 1):",
+                "SET_SIGNALS": "set_traffic_signals(",
+                "PROCESS_CROSSING": "advance_crossing_vehicles(",
+                "CHECK_CONFLICT": "check_intersection_conflict(",
+                "START_VEHICLES": "start_waiting_vehicle(",
+                "ADVANCE_QUEUE": "advance_approach_queue(",
+                "CLEAR_INTERSECTION": "clear_or_hold_vehicles(",
+                "COMPLETE": "finish_simulation(",
+            },
+            "C++": {
+                "INIT": "initIntersection(vehiclesCount)",
+                "LOOP_START": "for (int cycle = 1; cycle <= totalCycles; ++cycle)",
+                "SET_SIGNALS": "setTrafficSignals(",
+                "PROCESS_CROSSING": "advanceCrossingVehicles(",
+                "CHECK_CONFLICT": "checkIntersectionConflict(",
+                "START_VEHICLES": "startWaitingVehicle(",
+                "ADVANCE_QUEUE": "advanceApproachQueue(",
+                "CLEAR_INTERSECTION": "clearOrHoldVehicles(",
+                "COMPLETE": "finishSimulation(",
+            },
+            "C": {
+                "INIT": "init_intersection(vehicles_count)",
+                "LOOP_START": "for (cycle = 1; cycle <= total_cycles; cycle++)",
+                "SET_SIGNALS": "set_traffic_signals(",
+                "PROCESS_CROSSING": "advance_crossing_vehicles(",
+                "CHECK_CONFLICT": "check_intersection_conflict(",
+                "START_VEHICLES": "start_waiting_vehicle(",
+                "ADVANCE_QUEUE": "advance_approach_queue(",
+                "CLEAR_INTERSECTION": "clear_or_hold_vehicles(",
+                "COMPLETE": "finish_simulation(",
+            },
+            "BASIC": {
+                "INIT": "CALL InitIntersection(VehiclesCount)",
+                "LOOP_START": "FOR CYCLE = 1 TO TOTALCYCLES",
+                "SET_SIGNALS": "CALL SetTrafficSignals(",
+                "PROCESS_CROSSING": "CALL AdvanceCrossingVehicles",
+                "CHECK_CONFLICT": "CheckIntersectionConflict(",
+                "START_VEHICLES": "CALL StartWaitingVehicle(",
+                "ADVANCE_QUEUE": "CALL AdvanceApproachQueue(",
+                "CLEAR_INTERSECTION": "CALL ClearOrHoldVehicles",
+                "COMPLETE": "CALL FinishSimulation",
+            },
+            "Java": {
+                "INIT": "initIntersection(vehiclesCount)",
+                "LOOP_START": "for (int cycle = 1; cycle <= totalCycles; cycle++)",
+                "SET_SIGNALS": "setTrafficSignals(",
+                "PROCESS_CROSSING": "advanceCrossingVehicles(",
+                "CHECK_CONFLICT": "checkIntersectionConflict(",
+                "START_VEHICLES": "startWaitingVehicle(",
+                "ADVANCE_QUEUE": "advanceApproachQueue(",
+                "CLEAR_INTERSECTION": "clearOrHoldVehicles(",
+                "COMPLETE": "finishSimulation(",
+            },
+            "Pascal": {
+                "INIT": "InitIntersection(vehiclesCount)",
+                "LOOP_START": "for cycle := 1 to totalCycles do",
+                "SET_SIGNALS": "SetTrafficSignals(",
+                "PROCESS_CROSSING": "AdvanceCrossingVehicles(",
+                "CHECK_CONFLICT": "CheckIntersectionConflict(",
+                "START_VEHICLES": "StartWaitingVehicle(",
+                "ADVANCE_QUEUE": "AdvanceApproachQueue(",
+                "CLEAR_INTERSECTION": "ClearOrHoldVehicles(",
+                "COMPLETE": "FinishSimulation(",
+            },
+        }
+
+        for lang, tags in expected_fragments.items():
+            code_lines = self.plugin.get_code(lang).splitlines()
+            for tag, fragment in tags.items():
+                line_no = self.plugin.get_line_for_tag(lang, tag)
+                self.assertGreater(line_no, 0, f"Missing {tag} in {lang}")
+                self.assertLessEqual(line_no, len(code_lines))
+                line_text = code_lines[line_no - 1]
+                self.assertIn(
+                    fragment,
+                    line_text,
+                    f"Line {line_no} in {lang} does not contain expected fragment '{fragment}': '{line_text}'"
+                )
 
     def test_configurable_parameters(self):
         params = self.plugin.get_params()

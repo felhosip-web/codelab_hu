@@ -800,6 +800,7 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
 
                     # 3. Járművek indítása és sorok előrelépése
                     vehicles_started = False
+                    queue_advanced = False
                     if is_green and not conflicts_found:
                         for d in moving_dirs:
                             for v in vehicles[d]:
@@ -811,20 +812,28 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                             for v in vehicles[d]:
                                 if v["status"] == "queued":
                                     v["queue_pos"] -= 1
+                                    queue_advanced = True
                                     if v["queue_pos"] == 0:
                                         v["status"] = "waiting"
 
                     w_ns, w_ew, passed_cnt = count_active_vehicles()
 
                     # Szemantikai művelet meghatározása a lépéshez:
-                    # - Ha új fázis legelső másodperce és nincs járműindítás: SET_SIGNALS
-                    # - Ha zöld és indult jármű: START_VEHICLES
-                    # - Ha bent haladt át jármű és nem zöld: PROCESS_CROSSING / CLEAR_INTERSECTION
+                    # - Ha zöld és indult jármű:
+                    #   * ha a sorban mögötte lévők előreléptek: ADVANCE_QUEUE
+                    #   * ha nincs mögötte sor (utolsó autó indult): START_VEHICLES
                     # - Ha zöld de van konfliktus: CHECK_CONFLICT
+                    # - Ha áthaladó jármű haladt bent: PROCESS_CROSSING
+                    # - Ha sárga/piros kiürítés: CLEAR_INTERSECTION
+                    # - Egyébként lámpaállapot: SET_SIGNALS
                     if is_green:
                         if vehicles_started:
-                            semantic_tag = "START_VEHICLES"
-                            action_desc = f"🚗 Zöld jelzés: Elsőbbséget élvező járművek behajtanak a csomópontba ({row_hu})."
+                            if queue_advanced:
+                                semantic_tag = "ADVANCE_QUEUE"
+                                action_desc = f"🚗 Zöld jelzés: Elsőbbséget élvező jármű elindul, a várakozó sor előrelép ({row_hu})."
+                            else:
+                                semantic_tag = "START_VEHICLES"
+                                action_desc = f"🚗 Zöld jelzés: Elsőbbséget élvező jármű behajt a csomópontba ({row_hu})."
                         elif conflicts_found:
                             semantic_tag = "CHECK_CONFLICT"
                             action_desc = f"⚠️ Ütközésvédelem: Belépés felfüggesztve, a csomópont kiürítésre vár."
