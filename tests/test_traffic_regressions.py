@@ -46,16 +46,70 @@ class TestTrafficRegressions(unittest.TestCase):
             for step in steps:
                 if step.extra['tag'] == 'LOOP_START':
                     self.assertEqual(step.extra['step_duration_ms'], 0)
-                elif step.extra['remaining_time']:
+                elif step.extra['duration'] and step.extra['step_duration_ms']:
                     self.assertEqual(step.extra['step_duration_ms'], 1000)
             phases = {}
             for step in steps:
                 extra = step.extra
-                if extra['remaining_time']:
+                if extra['duration'] and extra['step_duration_ms']:
                     key = (extra['cycle'], extra.get('phase', extra.get('state')))
                     phases.setdefault(key, []).append(extra['remaining_time'])
             for countdown in phases.values():
                 self.assertEqual(countdown, list(range(countdown[0], 0, -1)))
+
+    def test_intersection_events_follow_calls_and_snapshot_counts(self):
+        plugin = TrafficIntersectionPlugin()
+        plugin.set_param('vehicles_per_approach', 1)
+        plugin.set_param('ns_green_duration', 5)
+        plugin.set_param('ew_green_duration', 5)
+        steps = list(plugin.get_steps())
+        tick = []
+        empty_green_ticks = 0
+        for step in steps:
+            extra = step.extra
+            if not extra['duration']:
+                continue
+            tick.append(step)
+            vehicles = extra['vehicles']
+            waiting = lambda dirs: sum(
+                v['status'] in ('waiting', 'queued')
+                for d in dirs for v in vehicles[d]
+            )
+            departed = sum(v['status'] == 'departed'
+                           for approach in vehicles.values() for v in approach)
+            self.assertEqual(step.array, [waiting(('north', 'south')),
+                                          waiting(('east', 'west')), departed])
+            if not extra['step_duration_ms']:
+                continue
+            green = any(light['green'] for light in extra['lights'].values())
+            expected = ['PROCESS_CROSSING', 'CHECK_CONFLICT']
+            expected += ['START_VEHICLES', 'ADVANCE_QUEUE'] if green else ['CLEAR_INTERSECTION']
+            tags = [event.extra['tag'] for event in tick]
+            if tags[0] == 'SET_SIGNALS':
+                tags = tags[1:]
+            self.assertEqual(tags, expected)
+            self.assertEqual(sum(event.extra['step_duration_ms'] for event in tick), 1000)
+            for event in tick:
+                self.assertEqual(event.extra['remaining_time'], extra['remaining_time'])
+                self.assertEqual(event.metrics['remaining_time'], extra['remaining_time'])
+                self.assertGreater(event.extra['remaining_time'], 0)
+            crossing = tick[-len(expected)]
+            check = tick[-len(expected) + 1]
+            self.assertEqual(crossing.extra['vehicles'], check.extra['vehicles'])
+            if green and not any(v['status'] in ('waiting', 'queued', 'crossing')
+                                 for approach in vehicles.values() for v in approach):
+                empty_green_ticks += 1
+            if not green:
+                self.assertIn('belépés tiltva', check.explanation)
+            tick = []
+        self.assertEqual(tick, [])
+        self.assertGreater(empty_green_ticks, 0)
+        # Default green durations leave vehicles crossing during yellow.
+        default_steps = list(TrafficIntersectionPlugin().get_steps())
+        self.assertTrue(any(step.extra['tag'] == 'CLEAR_INTERSECTION'
+                            and any(v['status'] == 'crossing'
+                                    for approach in step.extra['vehicles'].values() for v in approach)
+                            for step in default_steps))
 
     @unittest.skipUnless(HAS_QT, "PySide6 required")
     def test_empty_step_clears_canvas_and_dashboard(self):

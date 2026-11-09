@@ -641,17 +641,17 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
 
         vehicles = create_initial_vehicles(vehicles_count)
 
-        def count_active_vehicles():
-            waiting_ns = sum(1 for d in ["north", "south"] for v in vehicles[d] if v["status"] in ("waiting", "queued"))
-            waiting_ew = sum(1 for d in ["east", "west"] for v in vehicles[d] if v["status"] in ("waiting", "queued"))
-            passed = sum(1 for d in vehicles for v in vehicles[d] if v["status"] == "departed")
+        def count_active_vehicles(snapshot):
+            waiting_ns = sum(1 for d in ["north", "south"] for v in snapshot[d] if v["status"] in ("waiting", "queued"))
+            waiting_ew = sum(1 for d in ["east", "west"] for v in snapshot[d] if v["status"] in ("waiting", "queued"))
+            passed = sum(1 for d in snapshot for v in snapshot[d] if v["status"] == "departed")
             return waiting_ns, waiting_ew, passed
 
         init_lights = {
             "ns": {"red": True, "yellow": False, "green": False},
             "ew": {"red": True, "yellow": False, "green": False},
         }
-        w_ns, w_ew, passed_cnt = count_active_vehicles()
+        w_ns, w_ew, passed_cnt = count_active_vehicles(vehicles)
 
         # 1. INIT LÉPÉS
         yield VisualizationStep(
@@ -775,7 +775,7 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
 
                 for sec in range(duration, 0, -1):
                     # Egy szimulációs tick során végbemenő szemantikai részfolyamatok listája:
-                    # (tag, action_desc, vehicles_snapshot, step_duration_ms, rem_time)
+                    # (tag, action_desc, vehicles_snapshot)
                     tick_events: List[Tuple[str, str, Dict[str, List[Dict[str, Any]]]]] = []
 
                     # 1. Ha a fázis legelső másodperce: lámpaváltás művelet
@@ -787,19 +787,17 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                         ))
 
                     # 2. Kereszteződésben lévő járművek továbbhaladása és távozása
-                    crossing_present = any(v["status"] == "crossing" for d in vehicles for v in vehicles[d])
-                    if crossing_present:
-                        for d in ["north", "south", "east", "west"]:
-                            for v in vehicles[d]:
-                                if v["status"] == "crossing":
-                                    v["crossing_progress"] += 1
-                                    if v["crossing_progress"] >= 3:
-                                        v["status"] = "departed"
-                        tick_events.append((
-                            "PROCESS_CROSSING",
-                            f"🛣️ Kereszteződésben lévő járművek továbbhaladása és távozása ({row_hu}).",
-                            {d: [dict(v) for v in vehicles[d]] for d in vehicles}
-                        ))
+                    for d in ["north", "south", "east", "west"]:
+                        for v in vehicles[d]:
+                            if v["status"] == "crossing":
+                                v["crossing_progress"] += 1
+                                if v["crossing_progress"] >= 3:
+                                    v["status"] = "departed"
+                    tick_events.append((
+                        "PROCESS_CROSSING",
+                        f"🛣️ Kereszteződésben lévő járművek továbbhaladása és távozása ({row_hu}).",
+                        {d: [dict(v) for v in vehicles[d]] for d in vehicles}
+                    ))
 
                     # 3. Ütközésmentesség ellenőrzése a belépés előtt
                     conflicts_found = False
@@ -809,70 +807,55 @@ class TrafficIntersectionPlugin(AlgorithmPluginBase):
                             conflicts_found = True
                             break
 
-                    if is_green:
-                        tick_events.append((
-                            "CHECK_CONFLICT",
-                            f"🔍 Kereszteződés ellenőrzése: {'Ütközésveszély, belépés tiltva' if conflicts_found else 'Kereszteződés szabad a belépéshez'}.",
-                            {d: [dict(v) for v in vehicles[d]] for d in vehicles}
-                        ))
+                    tick_events.append((
+                        "CHECK_CONFLICT",
+                        f"🔍 Kereszteződés ellenőrzése: {'Ütközésveszély, belépés tiltva' if conflicts_found else ('Kereszteződés szabad a belépéshez' if is_green else 'Sárga/piros jelzés, belépés tiltva')}.",
+                        {d: [dict(v) for v in vehicles[d]] for d in vehicles}
+                    ))
 
                     # 4. Zöld jelzés esetén várakozó jármű behajtása és sor előrelépése
                     if is_green and not conflicts_found:
-                        vehicles_started = False
                         for d in moving_dirs:
                             for v in vehicles[d]:
                                 if v["status"] == "waiting" and v["queue_pos"] == 0:
                                     v["status"] = "crossing"
                                     v["crossing_progress"] = 1
-                                    vehicles_started = True
                                     break
-                        if vehicles_started:
-                            tick_events.append((
-                                "START_VEHICLES",
-                                f"🚗 Zöld jelzés: Várakozó jármű behajt a kereszteződésbe ({row_hu}).",
-                                {d: [dict(v) for v in vehicles[d]] for d in vehicles}
-                            ))
+                        tick_events.append((
+                            "START_VEHICLES",
+                            f"🚗 Zöld jelzés: Várakozó jármű behajt a kereszteződésbe ({row_hu}).",
+                            {d: [dict(v) for v in vehicles[d]] for d in vehicles}
+                        ))
 
-                        queue_advanced = False
                         for d in moving_dirs:
                             for v in vehicles[d]:
                                 if v["status"] == "queued":
                                     v["queue_pos"] -= 1
-                                    queue_advanced = True
                                     if v["queue_pos"] == 0:
                                         v["status"] = "waiting"
-                        if queue_advanced:
-                            tick_events.append((
-                                "ADVANCE_QUEUE",
-                                f"➡️ Várakozó járműsor előrelép a stopvonal felé ({row_hu}).",
-                                {d: [dict(v) for v in vehicles[d]] for d in vehicles}
-                            ))
-                    elif not is_green and not crossing_present:
+                        tick_events.append((
+                            "ADVANCE_QUEUE",
+                            f"➡️ Várakozó járműsor előrelép a stopvonal felé ({row_hu}).",
+                            {d: [dict(v) for v in vehicles[d]] for d in vehicles}
+                        ))
+                    elif not is_green:
                         tick_events.append((
                             "CLEAR_INTERSECTION",
                             f"⛔ Várakozás a stopvonal előtt: {row_hu}.",
                             {d: [dict(v) for v in vehicles[d]] for d in vehicles}
                         ))
 
-                    # Ha a tickben nem generálódott esemény (pl. üres zöld másodperc), adjunk hozzá egy alapértelmezett állapotot
-                    if not tick_events:
-                        tick_events.append((
-                            "CLEAR_INTERSECTION" if not is_green else "SET_SIGNALS",
-                            f"🚦 Forgalomirányítás folyamatban: {row_hu}.",
-                            {d: [dict(v) for v in vehicles[d]] for d in vehicles}
-                        ))
-
                     # Bocsássuk ki a tick összes szemantikai részfolyamatát pontos sorrendben!
-                    # Az utolsó esemény viszi a tick 1000 ms visszaszámlálási fázisidejét és remaining_time értékét,
+                    # Az utolsó esemény viszi a tick 1000 ms visszaszámlálási fázisidejét,
                     # a megelőző szemantikai részfolyamatok azonnali (0 ms) végrehajtási állapotok,
                     # garantálva a forráskód-sor finom, lépésről-lépésre történő követhetőségét.
                     for ev_idx, (sem_tag, act_desc, v_snapshot) in enumerate(tick_events):
                         total_step_counter += 1
                         is_last_in_tick = (ev_idx == len(tick_events) - 1)
                         step_duration = 1000 if is_last_in_tick else 0
-                        rem_time = sec if is_last_in_tick else 0
+                        rem_time = sec
 
-                        w_ns, w_ew, passed_cnt = count_active_vehicles()
+                        w_ns, w_ew, passed_cnt = count_active_vehicles(v_snapshot)
                         explanation = f"{act_desc} Hátralévő fázisidő: {sec} mp."
 
                         yield VisualizationStep(
