@@ -439,6 +439,7 @@ CALL InitIntersection(VehiclesCount)  ' [TAG:INIT]
 
 FOR CYCLE = 1 TO TOTALCYCLES  ' [TAG:LOOP_START]
     FOR PHASE_IDX = 1 TO 6
+        CALL LoadPhase(CYCLE, PHASE_IDX, PhaseNsSignal, PhaseEwSignal, PhaseDuration, ActiveDir, PhaseIsGreen)
         CALL SetTrafficSignals(PhaseNsSignal, PhaseEwSignal)  ' [TAG:SET_SIGNALS]
         FOR SEC = PhaseDuration TO 1 STEP -1
             ' 1. Kereszteződésben lévő járművek továbbhaladása és távozása
@@ -496,6 +497,7 @@ begin
   begin
     for phaseIdx := 1 to 6 do
     begin
+      LoadPhase(cycle, phaseIdx, phase);
       SetTrafficSignals(phase.nsSignal, phase.ewSignal);  // [TAG:SET_SIGNALS]
       for sec := phase.duration downto 1 do
       begin

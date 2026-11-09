@@ -1,4 +1,5 @@
 """Regression checks for traffic snapshots, timing and canvas geometry."""
+import os
 import unittest
 from unittest.mock import Mock, patch
 
@@ -18,6 +19,7 @@ class TestTrafficRegressions(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if HAS_QT:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
             cls.app = QApplication.instance() or QApplication([])
         else:
             cls.app = None

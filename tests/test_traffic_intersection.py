@@ -102,11 +102,35 @@ class TestTrafficIntersectionPlugin(unittest.TestCase):
             py_line = self.plugin.get_line_for_tag("Python", extra["tag"])
             self.assertEqual(step.code_line, py_line)
 
-        # Ellenőrizzük, hogy az ADVANCE_QUEUE és START_VEHICLES is kibocsátásra került
-        self.assertIn("ADVANCE_QUEUE", emitted_tags, "ADVANCE_QUEUE must be emitted when queue advances!")
-        self.assertIn("START_VEHICLES", emitted_tags, "START_VEHICLES must be emitted when a vehicle enters!")
-        self.assertIn("SET_SIGNALS", emitted_tags, "SET_SIGNALS must be emitted during signal changes!")
-        self.assertIn("PROCESS_CROSSING", emitted_tags, "PROCESS_CROSSING must be emitted during crossing traversal!")
+        starts = signal_changes = queue_advances = 0
+        for previous, current in zip(steps, steps[1:]):
+            before = previous.extra
+            after = current.extra
+            before_vehicles = {
+                v["id"]: v for approach in before["vehicles"].values() for v in approach
+            }
+            after_vehicles = {
+                v["id"]: v for approach in after["vehicles"].values() for v in approach
+            }
+            if any(v["status"] == "crossing" and before_vehicles[vid]["status"] != "crossing"
+                   for vid, v in after_vehicles.items()):
+                starts += 1
+                self.assertEqual(after["tag"], "START_VEHICLES")
+                self.assertEqual(before["tag"], "CHECK_CONFLICT")
+            if any(v["queue_pos"] < before_vehicles[vid]["queue_pos"]
+                   for vid, v in after_vehicles.items()):
+                queue_advances += 1
+                self.assertEqual(after["tag"], "ADVANCE_QUEUE")
+                self.assertEqual(before["tag"], "START_VEHICLES")
+                self.assertEqual(before["step_duration_ms"], 0)
+            if before["lights"] != after["lights"]:
+                signal_changes += 1
+                self.assertEqual(after["tag"], "SET_SIGNALS")
+
+        self.assertGreater(starts, 0)
+        self.assertGreater(queue_advances, 0)
+        self.assertGreater(signal_changes, 0)
+        self.assertIn("PROCESS_CROSSING", emitted_tags)
 
     def test_target_statements_in_all_six_languages(self):
         """Minden nyelven ellenőrizzük a szemantikai utasítások pontos szövegét, nemcsak Pythonban."""
