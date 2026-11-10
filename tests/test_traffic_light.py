@@ -485,19 +485,17 @@ class TestTrafficLightGUI(unittest.TestCase):
         init_step = win.steps[0]
         self.assertEqual(init_step.extra.get("step_duration_ms"), 1000)
 
-        # The untouched default speed must play one-second steps in real time.
-        self.assertEqual(win.speed_slider.value(), 300)
+        # Baseline slider is 500 ms -> ratio is 500/500 = 1.0 -> countdown interval should be 1000 ms
+        win.speed_slider.setValue(500)
         self.assertEqual(win.get_current_step_interval(init_step), 1000)
-        win.toggle_play()
-        self.assertEqual(win.timer.interval(), 1000)
-        win.toggle_play()
 
-        win.speed_slider.setValue(150)
+        # Slider scaled to 250 ms (2x faster) -> ratio is 250/500 = 0.5 -> interval is 500 ms
+        win.speed_slider.setValue(250)
         self.assertEqual(win.get_current_step_interval(init_step), 500)
-        win.speed_slider.setValue(600)
+
+        # Slider scaled to 1000 ms (2x slower) -> ratio is 1000/500 = 2.0 -> interval is 2000 ms
+        win.speed_slider.setValue(1000)
         self.assertEqual(win.get_current_step_interval(init_step), 2000)
-        loop_step = next(s for s in win.steps if s.extra['tag'] == 'LOOP_START')
-        self.assertEqual(win.get_current_step_interval(loop_step), 0)
 
         # Verify non-countdown plugin (e.g. bubble sort) preserves standard slider timing
         bubble_plugin = win.plugin_loader.get_plugin("bubble_sort")

@@ -566,10 +566,10 @@ class MainWindow(QMainWindow):
     def get_current_step_interval(self, step=None) -> int:
         """
         Kiszámítja az aktuális lépéshez tartozó lejátszási intervallumot (ms).
-        Ha a lépés rendelkezik explicit step_duration_ms értékkel (pl. 1000 ms a jelzőlámpa visszaszámlálásánál),
-        akkor azt a sebességcsúszka arányában (300 ms alapértelmezett értéket 1.0x szorzónak véve) és az animációs
-        sebességfaktorral skálázva alkalmazza, garantálva a valós idejű szimuláció pontosságát.
-        Hagyományos algoritmus lépéseknél megőrzi a standard speed_slider / anim_speed értéket.
+        Az explicit step_duration_ms értékű lépéseket az 500 ms-os referenciaértékhez
+        viszonyított sebességcsúszka-aránnyal és animációs sebességfaktorral skálázza.
+        A nulla időtartamú lépések azonnal végrehajthatók.
+        Hagyományos algoritmuslépéseknél megőrzi a standard speed_slider / anim_speed értéket.
         """
         anim_speed = max(0.1, self.api_manager.config.animation_speed)
         base_slider = self.speed_slider.value()
@@ -583,7 +583,7 @@ class MainWindow(QMainWindow):
         if step_duration == 0:
             return 0
         if step_duration is not None and step_duration > 0:
-            scale_ratio = base_slider / DEFAULT_STEP_INTERVAL_MS
+            scale_ratio = base_slider / 500.0
             return max(50, int((step_duration * scale_ratio) / anim_speed))
 
         return max(10, int(base_slider / anim_speed))
