@@ -1164,7 +1164,10 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
         """
         Valós idejű gyalogos hívógomb kérelem regisztrálása a futó szimulációhoz.
         Kezeli az ismételt, egyidejű és aktív átkelés alatti igényeket.
-        Ha engine meg van adva, azonnal frissíti a jövőbeli szimulációs lépéseket.
+        A kérelmek állapotát az aktuális futási pont (current_step) érvényes
+        kérelemhalmazaiból származtatja, így a már kiszolgált kérelmek nem éledhetnek újra.
+        Ha bármilyen gyalogos fázis (PED_WALK, PED_CLEARANCE, CLEARANCE_3) aktív,
+        minden új kérelem a következő ciklusra ütemeződik.
         """
         crossing = str(crossing).strip().lower()
         if crossing not in {"north", "south", "east", "west"}:
@@ -1177,20 +1180,37 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
             if 0 <= curr_idx < len(engine.steps):
                 current_step = engine.steps[curr_idx]
 
-        # Megvizsgáljuk, hogy az adott átkelő jelenleg aktív gyalogos zöld fázisban van-e
-        is_active_walk = False
+        # Határozzuk meg az aktuális lépés kérelem-állapotát
         if current_step:
-            extra = getattr(current_step, 'extra', {}) or {}
-            phase = extra.get('phase', '')
-            p_lights = extra.get('pedestrian_lights', {})
-            if phase == self.PHASE_PED_WALK and p_lights.get(crossing, {}).get('green'):
-                is_active_walk = True
-
-        if is_active_walk:
-            # Aktív átkelés alatt érkező igényt a következő ciklusra ütemezzük
-            self.runtime_next_cycle_requests.add(crossing)
+            cur_extra = getattr(current_step, 'extra', {}) or {}
+            cur_pending = set(cur_extra.get('pending_requests_set', self.runtime_requests))
+            cur_next_cycle = set(cur_extra.get('next_cycle_requests_set', self.runtime_next_cycle_requests))
+            cur_phase = cur_extra.get('phase', '')
         else:
-            self.runtime_requests.add(crossing)
+            cur_pending = set(self.runtime_requests)
+            cur_next_cycle = set(self.runtime_next_cycle_requests)
+            cur_phase = ''
+
+        # Ha éppen aktív gyalogos fázis (PED_WALK, PED_CLEARANCE, CLEARANCE_3) zajlik:
+        # BÁRMELY átkelőre érkező új kérelmet a következő ciklusra kell ütemezni,
+        # megőrizve a jelenlegi gyalogos fázis zöld átkelőit és idejét.
+        is_in_ped_phase = cur_phase in (self.PHASE_PED_WALK, self.PHASE_PED_CLEARANCE, self.PHASE_CLEARANCE_3)
+
+        if is_in_ped_phase:
+            cur_next_cycle.add(crossing)
+        else:
+            cur_pending.add(crossing)
+
+        self.runtime_requests = set(cur_pending)
+        self.runtime_next_cycle_requests = set(cur_next_cycle)
+
+        # Frissítsük az aktuális lépés kérelem-metaadatait is, hogy több egymást követő kérelem
+        # vagy egyidejű gombnyomás esetén a kérések hibátlanul összeadódjanak
+        if current_step and hasattr(current_step, 'extra') and isinstance(current_step.extra, dict):
+            current_step.extra['pending_requests_set'] = list(cur_pending)
+            current_step.extra['next_cycle_requests_set'] = list(cur_next_cycle)
+            req_states = {c: (c in cur_pending or c in cur_next_cycle) for c in ["north", "south", "east", "west"]}
+            current_step.extra['pedestrian_requests'] = req_states
 
         # Ha átadtuk az engine-t, újrageneráljuk a jövőbeli lépéseket a jelenlegi lépéstől
         if engine and hasattr(engine, 'steps') and engine.steps and current_step:
@@ -1244,8 +1264,17 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
 
         vehicles, pedestrians = self._build_initial_entities(vehicles_count, peds_count)
 
-        # Kezdeti konfigurált igények feldolgozása
-        pending_requests: Set[str] = set(self.runtime_requests)
+        # Kezdeti szimulációs indításkor / reset esetén tiszta kezdeti állapotot veszünk:
+        # a dinamikus paraméterben beállított igények érvényesülnek, elkerülve a korábbi futásokból maradt igényeket
+        pending_requests: Set[str] = set()
+        for token in raw_reqs.split(","):
+            cleaned = token.strip().lower()
+            if cleaned in {"north", "south", "east", "west"}:
+                pending_requests.add(cleaned)
+
+        self.runtime_requests = set(pending_requests)
+        self.runtime_next_cycle_requests = set()
+        next_cycle_requests: Set[str] = set()
         for token in raw_reqs.split(","):
             cleaned = token.strip().lower()
             if cleaned in {"north", "south", "east", "west"}:
@@ -1861,7 +1890,9 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                 }
             ))
 
-        for c_idx in range(start_cycle, total_cycles + 1):
+        c_idx = start_cycle
+        while c_idx <= total_cycles or next_cycle_requests:
+            effective_total_cycles = max(total_cycles, c_idx if not next_cycle_requests else c_idx + 1)
             if c_idx > start_cycle:
                 pending_requests.update(next_cycle_requests)
                 next_cycle_requests.clear()
@@ -1995,10 +2026,18 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                                 }
                             ))
 
-            # Gyalogos fázisok lefutása, ha van rájuk érvényes igény, vagy már benne vagyunk
+            # Gyalogos fázisok lefutása: kizárólag érvényes, igényelt átkelők kaphatnak zöldet!
+            # Ha éppen aktív gyalogos fázisban vagyunk (újragenerálás közben), a már zöld átkelőket tartjuk meg.
+            # SOHA nem kapcsolunk be minden átkelőt alapértelmezetten (nincs all-four-green fallback)!
             if pending_requests or is_in_ped_phase_currently:
-                active_serviced = set(pending_requests) if pending_requests else set(["north", "south", "east", "west"])
-                pending_requests.difference_update(active_serviced)
+                if is_in_ped_phase_currently:
+                    # Megőrizzük az éppen aktív gyalogos fázisban futó zöld átkelőket
+                    active_serviced = set(extra.get('active_crossings', []))
+                    if not active_serviced and cur_phase == self.PHASE_PED_WALK:
+                        active_serviced = {c for c, l in extra.get('pedestrian_lights', {}).items() if l.get('green')}
+                else:
+                    active_serviced = set(pending_requests)
+                    pending_requests.difference_update(active_serviced)
 
                 ped_phases = get_cycle_ped_phases(active_serviced)
                 ped_phase_ids = [p[0] for p in ped_phases]
@@ -2087,6 +2126,7 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                             ))
 
             is_in_ped_phase_currently = False
+            c_idx += 1
 
         # COMPLETE LÉPÉS
         step_counter += 1

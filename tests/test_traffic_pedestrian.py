@@ -478,3 +478,135 @@ class TestRealApplicationIntegration(unittest.TestCase):
 
         win.close()
         win.deleteLater()
+
+
+class TestPedestrianSchedulingAndLifecycle(unittest.TestCase):
+    """
+    Részletes tesztek a kérelmek életciklusára, kiszolgálására, újragenerálására,
+    aktív átkelés alatti ütemezésére és befejezési határviselkedésére.
+    """
+
+    def setUp(self):
+        self.plugin = TrafficPedestrianIntersectionPlugin()
+        self.plugin.runtime_requests.clear()
+        self.plugin.runtime_next_cycle_requests.clear()
+
+    def test_request_served_exactly_once_and_not_resurrected(self):
+        """1. és 2. és 3.: Kérelem pontosan egyszer fut le, nem éled újra újrageneráláskor."""
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        # 1. ciklusban Észak kérése
+        self.plugin.register_pedestrian_request("north", engine=engine)
+
+        # Átlépünk a 2. ciklus NS_GREEN fázisába (ahol a cycle 1 PED_WALK már lefutott)
+        while not (engine.steps[engine.step_idx].extra.get("cycle") == 2 and engine.steps[engine.step_idx].extra.get("phase") == "NS_GREEN"):
+            engine.next_step()
+
+        c2_idx = engine.step_idx
+        self.assertEqual(engine.steps[c2_idx].extra["cycle"], 2)
+
+        # Új kérés érkezik Keletre
+        self.plugin.register_pedestrian_request("east", engine=engine)
+
+        # A 2. ciklus PED_WALK fázisában KIZÁRÓLAG Kelet kap zöldet, Észak SOHA nem kap újra zöldet!
+        c2_walk = [s for s in engine.steps[c2_idx:] if s.extra.get("cycle") == 2 and s.extra.get("phase") == "PED_WALK"]
+        self.assertGreater(len(c2_walk), 0)
+        for s in c2_walk:
+            p_lights = s.extra["pedestrian_lights"]
+            self.assertTrue(p_lights["east"]["green"])
+            self.assertFalse(p_lights["north"]["green"], "North must not be resurrected after being served in cycle 1!")
+
+    def test_during_north_walk_south_request_queued_for_next_cycle(self):
+        """5. és 7.: Északi gyalogos zöld alatt érkező Déli kérés a következő ciklusra kerül."""
+        self.plugin.set_param("pedestrian_requests", "north")
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        # Átlépünk PED_WALK-ba
+        while engine.steps[engine.step_idx].extra.get("phase") != "PED_WALK":
+            engine.next_step()
+
+        curr_idx = engine.step_idx
+        self.assertEqual(engine.steps[curr_idx].extra["phase"], "PED_WALK")
+        self.assertTrue(engine.steps[curr_idx].extra["pedestrian_lights"]["north"]["green"])
+        self.assertFalse(engine.steps[curr_idx].extra["pedestrian_lights"]["south"]["green"])
+
+        # Kérés érkezik Délre az aktív átkelés alatt
+        self.plugin.register_pedestrian_request("south", engine=engine)
+
+        # Az aktuális 1. ciklus hátralévő lépéseiben Dél NEM kaphat zöldet
+        rem_c1_walk = [s for s in engine.steps[curr_idx:] if s.extra.get("cycle") == 1 and s.extra.get("phase") == "PED_WALK"]
+        for s in rem_c1_walk:
+            p_lights = s.extra["pedestrian_lights"]
+            self.assertTrue(p_lights["north"]["green"])
+            self.assertFalse(p_lights["south"]["green"])
+
+        # A 2. ciklusban Dél megkapja a zöldet
+        c2_walk = [s for s in engine.steps[curr_idx:] if s.extra.get("cycle") == 2 and s.extra.get("phase") == "PED_WALK"]
+        self.assertGreater(len(c2_walk), 0)
+        for s in c2_walk:
+            self.assertTrue(s.extra["pedestrian_lights"]["south"]["green"])
+
+    def test_during_north_walk_another_north_request_queued_for_next_cycle(self):
+        """6.: Északi gyalogos zöld alatt érkező újabb Északi kérés a következő ciklusra kerül."""
+        self.plugin.set_param("pedestrian_requests", "north")
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        while engine.steps[engine.step_idx].extra.get("phase") != "PED_WALK":
+            engine.next_step()
+
+        curr_idx = engine.step_idx
+        # Újabb északi kérés az aktív zöld alatt
+        self.plugin.register_pedestrian_request("north", engine=engine)
+        self.assertIn("north", self.plugin.runtime_next_cycle_requests)
+
+        # A 2. ciklusban ismét zöldet kap Észak
+        c2_walk = [s for s in engine.steps[curr_idx:] if s.extra.get("cycle") == 2 and s.extra.get("phase") == "PED_WALK"]
+        self.assertGreater(len(c2_walk), 0)
+        for s in c2_walk:
+            self.assertTrue(s.extra["pedestrian_lights"]["north"]["green"])
+
+    def test_no_request_discarded_at_final_cycle_boundary(self):
+        """8. és 13.: A végső ciklusban vagy annak határán érkező kérések nem vesznek el, ciklusbővítéssel kiszolgálódnak."""
+        self.plugin.set_param("pedestrian_requests", "")
+        self.plugin.set_param("cycles", 2)
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        # Eljutunk a 2. ciklus CLEARANCE_2 fázisáig
+        while not (engine.steps[engine.step_idx].extra.get("cycle") == 2 and engine.steps[engine.step_idx].extra.get("phase") == "CLEARANCE_2"):
+            engine.next_step()
+
+        curr_idx = engine.step_idx
+        # A 2. ciklus legvégén kérés érkezik 'west'-re
+        self.plugin.register_pedestrian_request("west", engine=engine)
+
+        # A szimuláció azonnal ütemezi a gyalogos zöld fázist Nyugatra
+        future_walk = [s for s in engine.steps[curr_idx:] if s.extra.get("phase") == "PED_WALK"]
+        self.assertGreater(len(future_walk), 0)
+        for s in future_walk:
+            self.assertTrue(s.extra["pedestrian_lights"]["west"]["green"])
+
+    def test_reset_does_not_resurrect_stale_requests(self):
+        """10.: A reset / újragenerálás tiszta kezdőállapotot hoz létre."""
+        self.plugin.set_param("pedestrian_requests", "")
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        # Futás közben kérés érkezik
+        self.plugin.register_pedestrian_request("east", engine=engine)
+        self.assertIn("east", self.plugin.runtime_requests)
+
+        # Meghívjuk a generate_steps() reset-et
+        engine.generate_steps()
+
+        # A futásidejű kérések kiürültek, nincsenek maradvány kérések
+        self.assertEqual(len(self.plugin.runtime_requests), 0)
+        self.assertFalse(any(s.extra.get("phase") == "PED_WALK" for s in engine.steps))
