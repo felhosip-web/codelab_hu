@@ -3,27 +3,30 @@
 TrafficPedestrianIntersectionViewerWidget - Dedikált grafikus kereszteződés és
 gyalogosforgalom vizualizáció a CodeLab HU oktatási felületéhez (Phase 3).
 Négyirányú út, Észak-Dél és Kelet-Nyugat sávok, járművek, stopvonalak,
-4 gyalogos zebra átkelő, 2-állású gyalogos jelzőlámpák, hívógombok és kérelemjelzők,
-várakozó és átkelő gyalogosok, valamint valós idejű oktatási műszerfal.
+4 gyalogos zebra átkelő, 2-állású gyalogos jelzőlámpák, interaktív hívógombok,
+kérelemjelzők, várakozó és átkelő gyalogosok, valamint valós idejű oktatási műszerfal.
 """
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Callable
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget, QPushButton, QGridLayout
 )
-from PySide6.QtCore import Qt, QRectF, QPointF
-from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal
+from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QCursor
 
 
 class PedestrianIntersectionCanvasWidget(QWidget):
     """
     Egyedi QPainter vászon a négyirányú útkereszteződés, járművek, gyalogosátkelők,
     gyalogoslámpák és gyalogosok megjelenítéséhez.
-    Minden kirajzolást tisztán az átadott VisualizationStep állapotból végez.
+    Interaktív: a vásznon elhelyezett hívógombokra kattintva is kérelem regisztrálható!
     """
+    crossing_requested = Signal(str)
+
     def __init__(self, parent=None):
         """Inicializálja a vászon widgetet alapértelmezett állapotokkal."""
         super().__init__(parent)
         self.setMinimumSize(420, 380)
+        self.setMouseTracking(True)
         self.vehicle_lights: Dict[str, Dict[str, bool]] = {
             "ns": {"red": True, "yellow": False, "green": False},
             "ew": {"red": True, "yellow": False, "green": False},
@@ -41,6 +44,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
             "north": [], "south": [], "east": [], "west": []
         }
         self.right_of_way = "NONE"
+        self._button_rects: Dict[str, QRectF] = {}
 
     def set_simulation_state(
         self,
@@ -59,6 +63,25 @@ class PedestrianIntersectionCanvasWidget(QWidget):
         self.pedestrians = pedestrians or {}
         self.right_of_way = right_of_way or "NONE"
         self.update()
+
+    def mousePressEvent(self, event):
+        """Kattintás kezelése a vásznon: ha a hívógombok valamelyikére kattintanak, kérést bocsát ki."""
+        pos = event.position() if hasattr(event, "position") else event.pos()
+        for crossing, rect in self._button_rects.items():
+            if rect.contains(pos):
+                self.crossing_requested.emit(crossing)
+                break
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Egérmozgás: ha a hívógombok felett van az egérmutató, mutató kéz kurzor jelenik meg."""
+        pos = event.position() if hasattr(event, "position") else event.pos()
+        over_button = any(rect.contains(pos) for rect in self._button_rects.values())
+        if over_button:
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+        super().mouseMoveEvent(event)
 
     def paintEvent(self, event):
         """Kirajzolja a teljes kereszteződést, zebrákat, lámpákat, járműveket és gyalogosokat."""
@@ -79,9 +102,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
         # 2. Aszfalt utak
         road_brush = QBrush(QColor("#2f3640"))
         painter.setPen(Qt.NoPen)
-        # É-D út
         painter.fillRect(int(cx - rw2), 0, int(road_width), h, road_brush)
-        # K-Ny út
         painter.fillRect(0, int(cy - rw2), w, int(road_width), road_brush)
 
         # Útszegélyek
@@ -96,20 +117,16 @@ class PedestrianIntersectionCanvasWidget(QWidget):
         painter.drawLine(int(cx + rw2), int(cy + rw2), w, int(cy + rw2))
         painter.drawLine(int(cx + rw2), int(cy + rw2), int(cx + rw2), h)
 
-        # 3. Gyalogosátkelőhelyek (Zebra sávok a stopvonal előtt)
+        # 3. Gyalogosátkelőhelyek (Zebra sávok)
         self._draw_crosswalks(painter, cx, cy, rw2)
 
         # 4. Stopvonalak
         stop_pen = QPen(QColor("#f5f6fa"), 3)
         painter.setPen(stop_pen)
         stop_offset = 24.0
-        # Északról érkező sáv
         painter.drawLine(int(cx), int(cy - rw2 - stop_offset), int(cx + rw2), int(cy - rw2 - stop_offset))
-        # Délről érkező sáv
         painter.drawLine(int(cx - rw2), int(cy + rw2 + stop_offset), int(cx), int(cy + rw2 + stop_offset))
-        # Nyugatról érkező sáv
         painter.drawLine(int(cx - rw2 - stop_offset), int(cy), int(cx - rw2 - stop_offset), int(cy + rw2))
-        # Keletről érkező sáv
         painter.drawLine(int(cx + rw2 + stop_offset), int(cy - rw2), int(cx + rw2 + stop_offset), int(cy))
 
         # Felező szaggatott vonalak
@@ -128,7 +145,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
         self._draw_vehicle_signal(painter, cx - rw2 - 42, cy - rw2 - 40, ew_lamps, "K-NY")
         self._draw_vehicle_signal(painter, cx + rw2 + 10, cy + rw2 + 10, ew_lamps, "K-NY")
 
-        # 6. Gyalogos jelzőlámpák és hívógombok mind a 4 átkelőnél
+        # 6. Gyalogos jelzőlámpák és interaktív hívógombok mind a 4 átkelőnél
         self._draw_pedestrian_signal_and_button(painter, "north", cx - rw2 - 20, cy - rw2 - 14)
         self._draw_pedestrian_signal_and_button(painter, "south", cx + rw2 + 5, cy + rw2 + 6)
         self._draw_pedestrian_signal_and_button(painter, "west", cx - rw2 - 14, cy - rw2 - 20)
@@ -147,28 +164,18 @@ class PedestrianIntersectionCanvasWidget(QWidget):
 
         bar_thickness = 4.0
         bar_len = 16.0
-        # Északi zebra (cx - rw2 .. cx + rw2 vízszintesen, cy - rw2 - 20 körül)
         num_bars = 6
         step_x = (rw2 * 2.0) / (num_bars + 1)
         for i in range(1, num_bars + 1):
             bx = cx - rw2 + i * step_x - bar_thickness / 2.0
             painter.fillRect(int(bx), int(cy - rw2 - bar_len - 2), int(bar_thickness), int(bar_len), QBrush(QColor("#f5f6fa")))
-
-        # Déli zebra
-        for i in range(1, num_bars + 1):
-            bx = cx - rw2 + i * step_x - bar_thickness / 2.0
             painter.fillRect(int(bx), int(cy + rw2 + 2), int(bar_thickness), int(bar_len), QBrush(QColor("#f5f6fa")))
 
-        # Nyugati zebra (cx - rw2 - 20 körül függőlegesen)
         num_v_bars = 6
         step_y = (rw2 * 2.0) / (num_v_bars + 1)
         for i in range(1, num_v_bars + 1):
             by = cy - rw2 + i * step_y - bar_thickness / 2.0
             painter.fillRect(int(cx - rw2 - bar_len - 2), int(by), int(bar_len), int(bar_thickness), QBrush(QColor("#f5f6fa")))
-
-        # Keleti zebra
-        for i in range(1, num_v_bars + 1):
-            by = cy - rw2 + i * step_y - bar_thickness / 2.0
             painter.fillRect(int(cx + rw2 + 2), int(by), int(bar_len), int(bar_thickness), QBrush(QColor("#f5f6fa")))
 
     def _draw_vehicle_signal(self, painter: QPainter, x: float, y: float, lamps: Dict[str, bool], label: str):
@@ -192,7 +199,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
         painter.drawEllipse(lx, int(y + 36), lamp_d, lamp_d)
 
     def _draw_pedestrian_signal_and_button(self, painter: QPainter, crossing: str, x: float, y: float):
-        """2-lámpás gyalogos lámpa és nyomógomb kérelemjelzővel."""
+        """2-lámpás gyalogos lámpa és kattintható hívógomb kérelemjelzővel."""
         p_lamp = self.pedestrian_lights.get(crossing, {})
         is_requested = self.pedestrian_requests.get(crossing, False)
 
@@ -203,21 +210,23 @@ class PedestrianIntersectionCanvasWidget(QWidget):
 
         d = 7
         lx = int(x + (box_w - d) / 2)
-        # Gyalogos Piros (Álló figura / piros kör)
         p_red = p_lamp.get("red", True)
         painter.setBrush(QBrush(QColor("#ff3838") if p_red else QColor("#3a1010")))
         painter.drawEllipse(lx, int(y + 3), d, d)
 
-        # Gyalogos Zöld (Lépő figura / zöld kör)
         p_green = p_lamp.get("green", False)
         painter.setBrush(QBrush(QColor("#2ed573") if p_green else QColor("#083015")))
         painter.drawEllipse(lx, int(y + 14), d, d)
 
         # Hívógomb kérelemjelző lámpa (sárga kerek gomb)
-        btn_d = 6
+        btn_d = 8
         btn_x = int(x + (box_w - btn_d) / 2)
-        btn_y = int(y + box_h + 2)
-        painter.setPen(QPen(QColor("#ffffff") if is_requested else QColor("#57606f"), 1))
+        btn_y = int(y + box_h + 3)
+
+        # Regisztráljuk a kattintható területet nagyobb margóval
+        self._button_rects[crossing] = QRectF(btn_x - 4, btn_y - 4, btn_d + 8, btn_d + 8)
+
+        painter.setPen(QPen(QColor("#ffffff") if is_requested else QColor("#57606f"), 1.2))
         painter.setBrush(QBrush(QColor("#fbc531") if is_requested else QColor("#2f3640")))
         painter.drawEllipse(btn_x, btn_y, btn_d, btn_d)
 
@@ -235,7 +244,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
             "west": QColor("#fbc531"),
         }
 
-        # Északi járművek (Dél felé)
+        # Északi járművek
         ns_lane_x_sb = cx + rw2 / 2.0
         for v in self.vehicles.get("north", []):
             if v["status"] == "departed":
@@ -249,7 +258,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
                 vy = (cy - rw2 - stop_offset) - car_len - 4 - q * (car_len + gap)
             self._draw_car_rect(painter, ns_lane_x_sb - car_w / 2.0, vy, car_w, car_len, color, v["id"])
 
-        # Déli járművek (Észak felé)
+        # Déli járművek
         ns_lane_x_nb = cx - rw2 / 2.0
         for v in self.vehicles.get("south", []):
             if v["status"] == "departed":
@@ -263,7 +272,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
                 vy = (cy + rw2 + stop_offset) + 4 + q * (car_len + gap)
             self._draw_car_rect(painter, ns_lane_x_nb - car_w / 2.0, vy, car_w, car_len, color, v["id"])
 
-        # Keleti járművek (Nyugat felé)
+        # Keleti járművek
         ew_lane_y_wb = cy - rw2 / 2.0
         for v in self.vehicles.get("east", []):
             if v["status"] == "departed":
@@ -277,7 +286,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
                 vx = (cx + rw2 + stop_offset) + 4 + q * (car_len + gap)
             self._draw_car_rect(painter, vx, ew_lane_y_wb - car_w / 2.0, car_len, car_w, color, v["id"])
 
-        # Nyugati járművek (Kelet felé)
+        # Nyugati járművek
         ew_lane_y_eb = cy + rw2 / 2.0
         for v in self.vehicles.get("west", []):
             if v["status"] == "departed":
@@ -314,8 +323,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
         ped_r = 5.0
         ped_color = QColor("#00d2d3")
 
-        # Északi átkelő (vízszintes zebra Északon: y = cy - rw2 - 10 körül)
-        # Gyalogosok balról jobbra kelnek át: x = cx - rw2 -> cx + rw2
+        # Északi átkelő
         y_north = cy - rw2 - 10
         for p in self.pedestrians.get("north", []):
             if p["status"] == "departed":
@@ -328,7 +336,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
                 px = (cx - rw2) - 10 - q * 12
             self._draw_ped_dot(painter, px, y_north, ped_r, ped_color, p["id"])
 
-        # Déli átkelő (y = cy + rw2 + 10 körül)
+        # Déli átkelő
         y_south = cy + rw2 + 10
         for p in self.pedestrians.get("south", []):
             if p["status"] == "departed":
@@ -341,7 +349,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
                 px = (cx + rw2) + 10 + q * 12
             self._draw_ped_dot(painter, px, y_south, ped_r, ped_color, p["id"])
 
-        # Nyugati átkelő (függőleges zebra Nyugaton: x = cx - rw2 - 10 körül)
+        # Nyugati átkelő
         x_west = cx - rw2 - 10
         for p in self.pedestrians.get("west", []):
             if p["status"] == "departed":
@@ -354,7 +362,7 @@ class PedestrianIntersectionCanvasWidget(QWidget):
                 py = (cy + rw2) + 10 + q * 12
             self._draw_ped_dot(painter, x_west, py, ped_r, ped_color, p["id"])
 
-        # Keleti átkelő (x = cx + rw2 + 10 körül)
+        # Keleti átkelő
         x_east = cx + rw2 + 10
         for p in self.pedestrians.get("east", []):
             if p["status"] == "departed":
@@ -378,11 +386,15 @@ class TrafficPedestrianIntersectionViewerWidget(QFrame):
     """
     Dedikált, interaktív vizualizációs widget a kereszteződés és gyalogosforgalom
     megjelenítéséhez (Phase 3).
-    Tisztán a VisualizationStep állapotából frissül, önálló timerek nélkül.
+    Valós idejű gombkezelést és kommunikációs csatornát biztosít az aktív szimulációhoz.
     """
+    request_made = Signal(str)
+
     def __init__(self, parent=None):
         """Inicializálja a widgetet és felületi komponenseit."""
         super().__init__(parent)
+        self.plugin = None
+        self.engine = None
         self.setFrameStyle(QFrame.Box | QFrame.Raised)
         self.setStyleSheet("""
             TrafficPedestrianIntersectionViewerWidget {
@@ -409,6 +421,7 @@ class TrafficPedestrianIntersectionViewerWidget(QFrame):
 
         # 1. Rajzvászon
         self.canvas = PedestrianIntersectionCanvasWidget(self)
+        self.canvas.crossing_requested.connect(self.request_pedestrian)
         content_layout.addWidget(self.canvas, stretch=2)
 
         # 2. Információs Műszerfal Panel
@@ -451,11 +464,11 @@ class TrafficPedestrianIntersectionViewerWidget(QFrame):
         v_header.setStyleSheet("color: #718093; font-weight: bold; font-size: 10px; margin-top: 4px;")
         info_layout.addWidget(v_header)
 
-        self.ns_light_status = QLabel("Észak-Dél: PIROS ⛔")
+        self.ns_light_status = QLabel("Észak-Dél jármű: PIROS ⛔")
         self.ns_light_status.setStyleSheet("color: #ff6b6b; font-weight: bold; font-size: 11px;")
         info_layout.addWidget(self.ns_light_status)
 
-        self.ew_light_status = QLabel("Kelet-Nyugat: PIROS ⛔")
+        self.ew_light_status = QLabel("Kelet-Nyugat jármű: PIROS ⛔")
         self.ew_light_status.setStyleSheet("color: #ff6b6b; font-weight: bold; font-size: 11px;")
         info_layout.addWidget(self.ew_light_status)
 
@@ -468,9 +481,59 @@ class TrafficPedestrianIntersectionViewerWidget(QFrame):
         self.ped_light_status.setStyleSheet("color: #ff6b6b; font-weight: bold; font-size: 11px;")
         info_layout.addWidget(self.ped_light_status)
 
-        self.ped_requests_label = QLabel("Hívógombok: -")
+        self.ped_requests_label = QLabel("Hívógombok: Nincs kérelem")
         self.ped_requests_label.setStyleSheet("color: #fbc531; font-weight: bold; font-size: 11px;")
         info_layout.addWidget(self.ped_requests_label)
+
+        # Interaktív Gyalogos Hívógombok (valós idejű gombok a felületen)
+        buttons_header = QLabel("GYALOGOS HÍVÓGOMBOK:")
+        buttons_header.setStyleSheet("color: #718093; font-weight: bold; font-size: 10px; margin-top: 4px;")
+        info_layout.addWidget(buttons_header)
+
+        btn_grid = QGridLayout()
+        btn_grid.setSpacing(4)
+
+        btn_style = """
+            QPushButton {
+                background-color: #2f3640;
+                color: #f5f6fa;
+                border: 1px solid #718093;
+                border-radius: 4px;
+                padding: 4px 6px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e1b12c;
+                color: #1e272e;
+            }
+            QPushButton:pressed {
+                background-color: #fbc531;
+                color: #1e272e;
+            }
+        """
+
+        self.btn_north = QPushButton("Észak 🔔")
+        self.btn_north.setStyleSheet(btn_style)
+        self.btn_north.clicked.connect(lambda: self.request_pedestrian("north"))
+        btn_grid.addWidget(self.btn_north, 0, 0)
+
+        self.btn_south = QPushButton("Dél 🔔")
+        self.btn_south.setStyleSheet(btn_style)
+        self.btn_south.clicked.connect(lambda: self.request_pedestrian("south"))
+        btn_grid.addWidget(self.btn_south, 0, 1)
+
+        self.btn_west = QPushButton("Nyugat 🔔")
+        self.btn_west.setStyleSheet(btn_style)
+        self.btn_west.clicked.connect(lambda: self.request_pedestrian("west"))
+        btn_grid.addWidget(self.btn_west, 1, 0)
+
+        self.btn_east = QPushButton("Kelet 🔔")
+        self.btn_east.setStyleSheet(btn_style)
+        self.btn_east.clicked.connect(lambda: self.request_pedestrian("east"))
+        btn_grid.addWidget(self.btn_east, 1, 1)
+
+        info_layout.addLayout(btn_grid)
 
         # Forgalmi metrikák
         m_header = QLabel("FORGALMI METRIKÁK:")
@@ -524,6 +587,36 @@ class TrafficPedestrianIntersectionViewerWidget(QFrame):
         self.status_detail.setAlignment(Qt.AlignCenter)
         self.status_detail.setWordWrap(True)
         main_layout.addWidget(self.status_detail)
+
+    def set_plugin(self, plugin):
+        """Beállítja a társított plugint a valós idejű kommunikációhoz."""
+        self.plugin = plugin
+
+    def set_engine(self, engine):
+        """Beállítja a társított motort a valós idejű lépésfrissítéshez."""
+        self.engine = engine
+
+    def request_pedestrian(self, crossing: str):
+        """
+        Kezeli az interaktív gombnyomást a vászonról vagy az információs panelről.
+        A kérést közvetlenül az aktív szimulációhoz továbbítja.
+        """
+        crossing = str(crossing).strip().lower()
+        self.request_made.emit(crossing)
+        handled = False
+        if self.plugin and hasattr(self.plugin, 'register_pedestrian_request'):
+            handled = self.plugin.register_pedestrian_request(crossing, engine=self.engine)
+        elif self.engine and hasattr(self.engine, 'register_pedestrian_request'):
+            handled = self.engine.register_pedestrian_request(crossing)
+
+        # Frissítsük a vizuális hívógomb visszajelzést a kérelemről
+        cur_reqs = dict(self.canvas.pedestrian_requests)
+        cur_reqs[crossing] = True
+        self.canvas.pedestrian_requests = cur_reqs
+        self.canvas.update()
+
+        req_list = [c.upper() for c, req in cur_reqs.items() if req]
+        self.ped_requests_label.setText(f"Hívógombok: {', '.join(req_list) if req_list else 'Nincs kérelem'}")
 
     def update_state(self, step):
         """Frissíti a felületi elemeket az átadott VisualizationStep alapján."""

@@ -7,7 +7,7 @@ A forrássorok és logikai lépések összerendelése karbantartható inline cí
 származtatott (nem törékeny, kézzel számolt sorpozíciókból).
 """
 import re
-from typing import Dict, Generator, List, Optional, Tuple, Any
+from typing import Dict, Generator, List, Optional, Tuple, Any, Set
 from core.plugin_system import AlgorithmPluginBase
 from core.dynamic_params import DynamicParams, Param
 from core.step import VisualizationStep
@@ -1067,6 +1067,8 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
     Négyirányú útkereszteződés járműforgalommal, 4 gyalogosátkelővel, gyalogos jelzőlámpákkal,
     hívógombokkal és garantált konfliktusmentes közlekedésbiztonsági koordinációval.
     Valós idejű kód- és végrehajtássor-követés mind a 6 támogatott programozási nyelven.
+    Támogatja a valós idejű gyalogos hívógomb kérelmeket menet közben és determinisztikus
+    fázisütemezést.
     """
     id = "traffic_pedestrian_intersection"
     name = "Kereszteződés és gyalogos szimuláció"
@@ -1117,10 +1119,12 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
         self.params.add(Param("ped_clearance_duration", "Gyalogos kiürítési idő (mp)", "int", 2, 1, 5, description="Gyalogos kiürítési piros időtartam járműindítás előtt"))
         self.params.add(Param("vehicles_per_approach", "Járművek száma irányonként", "int", 2, 0, 6, description="Kezdeti járműsor mérete megközelítési irányonként"))
         self.params.add(Param("pedestrians_per_crossing", "Gyalogosok átkelőnként", "int", 2, 0, 6, description="Kezdeti várakozó gyalogosok száma átkelőnként"))
-        self.params.add(Param("pedestrian_requests", "Gyalogos igények (É,D,K,Ny)", "str", "north,south,east,west", description="Kezdeti gyalogos hívógomb igények (vesszővel elválasztva: north,south,east,west)"))
+        self.params.add(Param("pedestrian_requests", "Kezdeti igények (É,D,K,Ny)", "str", "", description="Kezdeti gyalogos hívógomb igények (vesszővel elválasztva: north,south,east,west, vagy üres)"))
         self.params.add(Param("cycles", "Ciklusok száma", "int", 2, 1, 10, description="Kereszteződési forgalmi ciklusok száma"))
         self.complexity_level = "advanced"
         self._custom_visualizer = None
+        self.runtime_requests: Set[str] = set()
+        self.runtime_next_cycle_requests: Set[str] = set()
 
     def get_params(self) -> DynamicParams:
         """Visszaadja a konfigurálható dinamikus paramétereket."""
@@ -1150,17 +1154,82 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
             from ui.traffic_pedestrian_widget import TrafficPedestrianIntersectionViewerWidget
             if self._custom_visualizer is None:
                 self._custom_visualizer = TrafficPedestrianIntersectionViewerWidget()
+                self._custom_visualizer.set_plugin(self)
             return self._custom_visualizer
         except Exception as e:
             print(f"[TrafficPedestrianIntersectionPlugin] create_visualizer error: {e}")
             return None
 
+    def register_pedestrian_request(self, crossing: str, engine=None) -> bool:
+        """
+        Valós idejű gyalogos hívógomb kérelem regisztrálása a futó szimulációhoz.
+        Kezeli az ismételt, egyidejű és aktív átkelés alatti igényeket.
+        Ha engine meg van adva, azonnal frissíti a jövőbeli szimulációs lépéseket.
+        """
+        crossing = str(crossing).strip().lower()
+        if crossing not in {"north", "south", "east", "west"}:
+            return False
+
+        current_step = None
+        curr_idx = 0
+        if engine and hasattr(engine, 'steps') and engine.steps:
+            curr_idx = getattr(engine, 'step_idx', 0)
+            if 0 <= curr_idx < len(engine.steps):
+                current_step = engine.steps[curr_idx]
+
+        # Megvizsgáljuk, hogy az adott átkelő jelenleg aktív gyalogos zöld fázisban van-e
+        is_active_walk = False
+        if current_step:
+            extra = getattr(current_step, 'extra', {}) or {}
+            phase = extra.get('phase', '')
+            p_lights = extra.get('pedestrian_lights', {})
+            if phase == self.PHASE_PED_WALK and p_lights.get(crossing, {}).get('green'):
+                is_active_walk = True
+
+        if is_active_walk:
+            # Aktív átkelés alatt érkező igényt a következő ciklusra ütemezzük
+            self.runtime_next_cycle_requests.add(crossing)
+        else:
+            self.runtime_requests.add(crossing)
+
+        # Ha átadtuk az engine-t, újrageneráljuk a jövőbeli lépéseket a jelenlegi lépéstől
+        if engine and hasattr(engine, 'steps') and engine.steps and current_step:
+            new_future = self.generate_future_steps_from_step(current_step, curr_idx)
+            engine.steps = engine.steps[:curr_idx + 1] + new_future
+
+        return True
+
+    def _build_initial_entities(self, v_count: int, p_count: int):
+        vehicles: Dict[str, List[Dict[str, Any]]] = {}
+        for d in ["north", "south", "east", "west"]:
+            vehicles[d] = []
+            for i in range(v_count):
+                vehicles[d].append({
+                    "id": f"{d[0].upper()}{i+1}",
+                    "direction": d,
+                    "queue_pos": i,
+                    "status": "waiting" if i == 0 else "queued",
+                    "crossing_progress": 0,
+                })
+
+        pedestrians: Dict[str, List[Dict[str, Any]]] = {}
+        for c in ["north", "south", "east", "west"]:
+            pedestrians[c] = []
+            for i in range(p_count):
+                pedestrians[c].append({
+                    "id": f"P_{c[0].upper()}{i+1}",
+                    "crossing": c,
+                    "queue_pos": i,
+                    "status": "waiting" if i == 0 else "queued",
+                    "crossing_progress": 0,
+                })
+        return vehicles, pedestrians
+
     def get_steps(self, arr=None) -> Generator[VisualizationStep, None, None]:
         """
         Determinisztikus lépésgenerátor a négyirányú forgalmi kereszteződéshez
         gyalogosátkelőkkel és hívógombokkal.
-        Garantálja a kód-szinkronizált szemantikai végrehajtást és a szigorú
-        közlekedésbiztonsági invariánsokat.
+        Kezeli a konfigurált kezdeti és a runtime igényeket is.
         """
         ns_green_sec = max(1, int(self.params.get("ns_green_duration") or 3))
         ew_green_sec = max(1, int(self.params.get("ew_green_duration") or 3))
@@ -1171,48 +1240,22 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
         vehicles_count = max(0, int(self.params.get("vehicles_per_approach") if self.params.get("vehicles_per_approach") is not None else 2))
         peds_count = max(0, int(self.params.get("pedestrians_per_crossing") if self.params.get("pedestrians_per_crossing") is not None else 2))
         total_cycles = max(1, int(self.params.get("cycles") or 2))
-        raw_reqs = str(self.params.get("pedestrian_requests") or "north,south,east,west")
+        raw_reqs = str(self.params.get("pedestrian_requests") or "")
 
-        # Kezdeti járművek létrehozása
-        vehicles: Dict[str, List[Dict[str, Any]]] = {}
-        for d in ["north", "south", "east", "west"]:
-            vehicles[d] = []
-            for i in range(vehicles_count):
-                vehicles[d].append({
-                    "id": f"{d[0].upper()}{i+1}",
-                    "direction": d,
-                    "queue_pos": i,
-                    "status": "waiting" if i == 0 else "queued",
-                    "crossing_progress": 0,
-                })
+        vehicles, pedestrians = self._build_initial_entities(vehicles_count, peds_count)
 
-        # Kezdeti gyalogosok létrehozása
-        pedestrians: Dict[str, List[Dict[str, Any]]] = {}
-        for c in ["north", "south", "east", "west"]:
-            pedestrians[c] = []
-            for i in range(peds_count):
-                pedestrians[c].append({
-                    "id": f"P_{c[0].upper()}{i+1}",
-                    "crossing": c,
-                    "queue_pos": i,
-                    "status": "waiting" if i == 0 else "queued",
-                    "crossing_progress": 0,
-                })
-
-        # Igénykezelő állapot
-        parsed_reqs = set()
+        # Kezdeti konfigurált igények feldolgozása
+        pending_requests: Set[str] = set(self.runtime_requests)
         for token in raw_reqs.split(","):
             cleaned = token.strip().lower()
             if cleaned in {"north", "south", "east", "west"}:
-                parsed_reqs.add(cleaned)
+                pending_requests.add(cleaned)
 
-        pending_requests: set = set(parsed_reqs)
-        next_cycle_requests: set = set()
+        next_cycle_requests: Set[str] = set(self.runtime_next_cycle_requests)
 
         def get_req_states():
             return {c: (c in pending_requests or c in next_cycle_requests) for c in ["north", "south", "east", "west"]}
 
-        # Kezdő lámpaállapotok: Minden jármű és minden gyalogos PIROS
         cur_veh_lights = {
             "ns": {"red": True, "yellow": False, "green": False},
             "ew": {"red": True, "yellow": False, "green": False},
@@ -1246,6 +1289,8 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                 "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
                 "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
                 "pedestrian_requests": get_req_states(),
+                "pending_requests_set": list(pending_requests),
+                "next_cycle_requests_set": list(next_cycle_requests),
                 "vehicles": {d: [dict(v) for v in vehicles[d]] for d in vehicles},
                 "pedestrians": {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
                 "remaining_time": 0,
@@ -1260,7 +1305,7 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
         total_step_counter = 0
 
         for cycle_idx in range(1, total_cycles + 1):
-            # Ciklus elején a korábbi ciklus alatti átkelés közben érkezett igények élesednek
+            # Ciklus elején a korábbi ciklus alatt átkelés közben érkezett igények érvényesülnek
             pending_requests.update(next_cycle_requests)
             next_cycle_requests.clear()
 
@@ -1281,6 +1326,8 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                     "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
                     "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
                     "pedestrian_requests": get_req_states(),
+                    "pending_requests_set": list(pending_requests),
+                    "next_cycle_requests_set": list(next_cycle_requests),
                     "vehicles": {d: [dict(v) for v in vehicles[d]] for d in vehicles},
                     "pedestrians": {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
                     "remaining_time": 0,
@@ -1292,20 +1339,8 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                 }
             )
 
-            # Ciklus fázisai:
-            # 1. NS jármű ZÖLD
-            # 2. NS jármű SÁRGA
-            # 3. Jármű Kiürítés 1 (Mindkét járműirány PIROS)
-            # 4. EW jármű ZÖLD
-            # 5. EW jármű SÁRGA
-            # 6. Jármű Kiürítés 2 (Mindkét járműirány PIROS)
-            # 7. Gyalogos SÉTA (PED_WALK) - Minden jármű szigorúan PIROS!
-            # 8. Gyalogos KIÜRÍTÉS (PED_CLEARANCE) - Gyalogos lámpák már PIROSAK, az átkelők befejezik, járművek még PIROSAK!
-            # 9. Biztonsági kiürítés (CLEARANCE_3) - Minden lámpa PIROS, tiszta átmenet a következő ciklushoz.
-
-            ped_active_crossings = set(pending_requests) if pending_requests else set(["north", "south", "east", "west"])
-
-            phase_definitions = [
+            # Standard jármű fázisok
+            phases = [
                 # Phase 1: NS Vehicle Green
                 (
                     self.PHASE_NS_GREEN,
@@ -1315,10 +1350,10 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                     ns_green_sec,
                     "NORTH_SOUTH",
                     "Észak-Dél járművek (Szabad út)",
-                    ["north", "south"], # moving vehicle dirs
-                    [], # moving ped crossings
-                    True, # veh is green
-                    False, # ped is green
+                    ["north", "south"],
+                    [],
+                    True,
+                    False,
                 ),
                 # Phase 2: NS Vehicle Yellow
                 (
@@ -1390,195 +1425,24 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                     False,
                     False,
                 ),
-                # Phase 7: Pedestrian Walk
-                (
-                    self.PHASE_PED_WALK,
-                    {"red": True, "yellow": False, "green": False},
-                    {"red": True, "yellow": False, "green": False},
-                    {c: {"red": (c not in ped_active_crossings), "green": (c in ped_active_crossings)} for c in ["north", "south", "east", "west"]},
-                    ped_walk_sec,
-                    "PEDESTRIANS",
-                    "Gyalogos forgalom (ZÖLD jelzés az igényelt átkelőkön)",
-                    [],
-                    list(ped_active_crossings),
-                    False,
-                    True,
-                ),
-                # Phase 8: Pedestrian Clearance
-                (
-                    self.PHASE_PED_CLEARANCE,
-                    {"red": True, "yellow": False, "green": False},
-                    {"red": True, "yellow": False, "green": False},
-                    {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]},
-                    ped_clear_sec,
-                    "PEDESTRIANS",
-                    "Gyalogos kiürítés (Jelzőlámpák PIROSAK, átkelők befejezése)",
-                    [],
-                    [],
-                    False,
-                    False,
-                ),
-                # Phase 9: Clearance 3
-                (
-                    self.PHASE_CLEARANCE_3,
-                    {"red": True, "yellow": False, "green": False},
-                    {"red": True, "yellow": False, "green": False},
-                    {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]},
-                    all_red_sec,
-                    "NONE",
-                    "Biztonsági kiürítés új ciklus előtt (Minden PIROS)",
-                    [],
-                    [],
-                    False,
-                    False,
-                ),
             ]
 
-            for phase_id, ns_light, ew_light, ped_light_map, duration, row_id, row_hu, moving_veh_dirs, moving_ped_crossings, veh_is_green, ped_is_green in phase_definitions:
+            # Futtassuk a járműfázisokat
+            for phase_id, ns_light, ew_light, ped_light_map, duration, row_id, row_hu, moving_veh_dirs, moving_ped_crossings, veh_is_green, ped_is_green in phases:
                 cur_veh_lights = {"ns": dict(ns_light), "ew": dict(ew_light)}
                 cur_ped_lights = {c: dict(l) for c, l in ped_light_map.items()}
 
-                if phase_id == self.PHASE_PED_WALK:
-                    # Az igényelt gyalogos átkelők igénye kiszolgálásra kerül
-                    for c in ped_active_crossings:
-                        pending_requests.discard(c)
-
                 for sec in range(duration, 0, -1):
-                    tick_events: List[Tuple[str, str, Dict[str, Any], Dict[str, Any]]] = []
-
-                    # 1. Igények lekérdezése / ellenőrzése
-                    if sec == duration:
-                        req_str = ", ".join(sorted(list(pending_requests))) if pending_requests else "nincs aktív igény"
-                        tick_events.append((
-                            "POLL_REQUESTS",
-                            f"🔘 Gyalogos hívógomb igények kiértékelése: {req_str}.",
-                            {d: [dict(v) for v in vehicles[d]] for d in vehicles},
-                            {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
-                        ))
-
-                        # 2. Jelzőlámpák beállítása
-                        tick_events.append((
-                            "SET_SIGNALS",
-                            f"🚦 Összesített jelzőlámpák beállítása: {row_hu}. Fázisidő: {duration} mp.",
-                            {d: [dict(v) for v in vehicles[d]] for d in vehicles},
-                            {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
-                        ))
-
-                    # 3. Kereszteződésben lévő járművek és gyalogosok továbbhaladása és távozása
-                    # Járművek léptetése
-                    for d in ["north", "south", "east", "west"]:
-                        for v in vehicles[d]:
-                            if v["status"] == "crossing":
-                                v["crossing_progress"] += 1
-                                if v["crossing_progress"] >= 3:
-                                    v["status"] = "departed"
-
-                    # Gyalogosok léptetése
-                    for c in ["north", "south", "east", "west"]:
-                        for p in pedestrians[c]:
-                            if p["status"] == "crossing":
-                                p["crossing_progress"] += 1
-                                if p["crossing_progress"] >= 3:
-                                    p["status"] = "departed"
-
-                    tick_events.append((
-                        "PROCESS_CROSSINGS",
-                        f"🚶🚗 Áthaladó járművek és gyalogosok továbbhaladása ({row_hu}).",
-                        {d: [dict(v) for v in vehicles[d]] for d in vehicles},
-                        {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
-                    ))
-
-                    # 4. Ütközés- és konfliktusmentesség ellenőrzése
-                    veh_conflicts = False
-                    for d in moving_veh_dirs:
-                        conflicting_veh_dirs = ["east", "west"] if d in ["north", "south"] else ["north", "south"]
-                        if any(cv["status"] == "crossing" for cd in conflicting_veh_dirs for cv in vehicles[cd]):
-                            veh_conflicts = True
-                            break
-                        conflicting_peds = ["north", "south"] if d in ["north", "south"] else ["east", "west"]
-                        if any(cp["status"] == "crossing" for c in conflicting_peds for cp in pedestrians[c]):
-                            veh_conflicts = True
-                            break
-
-                    ped_conflicts = False
-                    for c in moving_ped_crossings:
-                        conflicting_vdirs = ["north", "south"] if c in ["north", "south"] else ["east", "west"]
-                        if any(cv["status"] == "crossing" for cd in conflicting_vdirs for cv in vehicles[cd]):
-                            ped_conflicts = True
-                            break
-
-                    has_conflict = veh_conflicts or ped_conflicts
-                    movement_allowed = (veh_is_green and not has_conflict) or (ped_is_green and not has_conflict)
-
-                    conflict_desc = "Biztonsági ellenőrzés: Ütközésmentes áthaladás engedélyezve." if movement_allowed else "Biztonsági ellenőrzés: Konfliktus vagy tilos jelzés, belépés tiltva."
-                    tick_events.append((
-                        "CHECK_CONFLICTS",
-                        f"🔍 {conflict_desc}",
-                        {d: [dict(v) for v in vehicles[d]] for d in vehicles},
-                        {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
-                    ))
-
-                    # 5. Indítás és sor előreléptetés vagy megállítás
-                    if movement_allowed:
-                        # Ha jármű zöld
-                        if veh_is_green:
-                            for d in moving_veh_dirs:
-                                for v in vehicles[d]:
-                                    if v["status"] == "waiting" and v["queue_pos"] == 0:
-                                        v["status"] = "crossing"
-                                        v["crossing_progress"] = 1
-                                        break
-                        # Ha gyalogos zöld
-                        if ped_is_green:
-                            for c in moving_ped_crossings:
-                                for p in pedestrians[c]:
-                                    if p["status"] == "waiting" and p["queue_pos"] == 0:
-                                        p["status"] = "crossing"
-                                        p["crossing_progress"] = 1
-                                        break
-
-                        tick_events.append((
-                            "START_MOVEMENTS",
-                            f"🟢 Zöld jelzés: Engedélyezett forgalom belép az átkelőbe / kereszteződésbe ({row_hu}).",
-                            {d: [dict(v) for v in vehicles[d]] for d in vehicles},
-                            {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
-                        ))
-
-                        if veh_is_green:
-                            for d in moving_veh_dirs:
-                                for v in vehicles[d]:
-                                    if v["status"] == "queued":
-                                        v["queue_pos"] -= 1
-                                        if v["queue_pos"] == 0:
-                                            v["status"] = "waiting"
-
-                        if ped_is_green:
-                            for c in moving_ped_crossings:
-                                for p in pedestrians[c]:
-                                    if p["status"] == "queued":
-                                        p["queue_pos"] -= 1
-                                        if p["queue_pos"] == 0:
-                                            p["status"] = "waiting"
-
-                        tick_events.append((
-                            "ADVANCE_QUEUES",
-                            f"➡️ Várakozó sorok előrelépése a stopvonalhoz / járdaszegélyhez ({row_hu}).",
-                            {d: [dict(v) for v in vehicles[d]] for d in vehicles},
-                            {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
-                        ))
-                    else:
-                        tick_events.append((
-                            "HOLD_TRAFFIC",
-                            f"⛔ Tilos jelzés vagy kiürítés: Forgalom visszatartása a megállás vonalánál ({row_hu}).",
-                            {d: [dict(v) for v in vehicles[d]] for d in vehicles},
-                            {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
-                        ))
+                    tick_events = self._generate_tick_events(
+                        sec, duration, row_hu, vehicles, pedestrians,
+                        moving_veh_dirs, moving_ped_crossings,
+                        veh_is_green, ped_is_green, pending_requests
+                    )
 
                     for ev_idx, (sem_tag, act_desc, v_snap, p_snap) in enumerate(tick_events):
                         total_step_counter += 1
                         is_last_in_tick = (ev_idx == len(tick_events) - 1)
                         step_duration = 1000 if is_last_in_tick else 0
-
                         w_v, w_p, passed_cnt = count_metrics(v_snap, p_snap)
                         explanation = f"{act_desc} Hátralévő fázisidő: {sec} mp."
 
@@ -1603,6 +1467,8 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                                 "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
                                 "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
                                 "pedestrian_requests": get_req_states(),
+                                "pending_requests_set": list(pending_requests),
+                                "next_cycle_requests_set": list(next_cycle_requests),
                                 "vehicles": v_snap,
                                 "pedestrians": p_snap,
                                 "remaining_time": sec,
@@ -1613,6 +1479,111 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                                 "step_index": total_step_counter,
                             }
                         )
+
+            # Gyalogos fázis ütemezése:
+            # Csak akkor ütemezzük a gyalogos zöld és kiürítési fázist, ha van aktív igény!
+            # Ha nincs igény, kihagyjuk a felesleges várakozást.
+            if pending_requests:
+                active_crossings_to_service = set(pending_requests)
+                # Kiszolgálás: a zöldet kapó átkelők kérése teljesül
+                pending_requests.difference_update(active_crossings_to_service)
+
+                ped_phases = [
+                    # Phase 7: Pedestrian Walk
+                    (
+                        self.PHASE_PED_WALK,
+                        {"red": True, "yellow": False, "green": False},
+                        {"red": True, "yellow": False, "green": False},
+                        {c: {"red": (c not in active_crossings_to_service), "green": (c in active_crossings_to_service)} for c in ["north", "south", "east", "west"]},
+                        ped_walk_sec,
+                        "PEDESTRIANS",
+                        "Gyalogos forgalom (ZÖLD jelzés az igényelt átkelőkön)",
+                        [],
+                        list(active_crossings_to_service),
+                        False,
+                        True,
+                    ),
+                    # Phase 8: Pedestrian Clearance
+                    (
+                        self.PHASE_PED_CLEARANCE,
+                        {"red": True, "yellow": False, "green": False},
+                        {"red": True, "yellow": False, "green": False},
+                        {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]},
+                        ped_clear_sec,
+                        "PEDESTRIANS",
+                        "Gyalogos kiürítés (Jelzőlámpák PIROSAK, átkelők befejezése)",
+                        [],
+                        [],
+                        False,
+                        False,
+                    ),
+                    # Phase 9: Clearance 3
+                    (
+                        self.PHASE_CLEARANCE_3,
+                        {"red": True, "yellow": False, "green": False},
+                        {"red": True, "yellow": False, "green": False},
+                        {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]},
+                        all_red_sec,
+                        "NONE",
+                        "Biztonsági kiürítés új ciklus előtt (Minden PIROS)",
+                        [],
+                        [],
+                        False,
+                        False,
+                    ),
+                ]
+
+                for phase_id, ns_light, ew_light, ped_light_map, duration, row_id, row_hu, moving_veh_dirs, moving_ped_crossings, veh_is_green, ped_is_green in ped_phases:
+                    cur_veh_lights = {"ns": dict(ns_light), "ew": dict(ew_light)}
+                    cur_ped_lights = {c: dict(l) for c, l in ped_light_map.items()}
+
+                    for sec in range(duration, 0, -1):
+                        tick_events = self._generate_tick_events(
+                            sec, duration, row_hu, vehicles, pedestrians,
+                            moving_veh_dirs, moving_ped_crossings,
+                            veh_is_green, ped_is_green, pending_requests
+                        )
+
+                        for ev_idx, (sem_tag, act_desc, v_snap, p_snap) in enumerate(tick_events):
+                            total_step_counter += 1
+                            is_last_in_tick = (ev_idx == len(tick_events) - 1)
+                            step_duration = 1000 if is_last_in_tick else 0
+                            w_v, w_p, passed_cnt = count_metrics(v_snap, p_snap)
+                            explanation = f"{act_desc} Hátralévő fázisidő: {sec} mp."
+
+                            yield VisualizationStep(
+                                explanation=explanation,
+                                code_line=self.get_line_for_tag("Python", sem_tag),
+                                metrics={
+                                    "comparisons": total_step_counter,
+                                    "pass_num": cycle_idx,
+                                    "remaining_time": sec,
+                                    "cycle": cycle_idx,
+                                },
+                                array=[w_v, w_p, passed_cnt],
+                                key=self.PHASE_NAMES_HU[phase_id],
+                                extra={
+                                    "tag": sem_tag,
+                                    "phase": phase_id,
+                                    "phase_hu": self.PHASE_NAMES_HU[phase_id],
+                                    "operation": sem_tag,
+                                    "right_of_way": row_id,
+                                    "right_of_way_hu": row_hu,
+                                    "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
+                                    "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
+                                    "pedestrian_requests": get_req_states(),
+                                    "pending_requests_set": list(pending_requests),
+                                    "next_cycle_requests_set": list(next_cycle_requests),
+                                    "vehicles": v_snap,
+                                    "pedestrians": p_snap,
+                                    "remaining_time": sec,
+                                    "duration": duration,
+                                    "step_duration_ms": step_duration,
+                                    "cycle": cycle_idx,
+                                    "total_cycles": total_cycles,
+                                    "step_index": total_step_counter,
+                                }
+                            )
 
         # 3. COMPLETE LÉPÉS
         yield VisualizationStep(
@@ -1636,6 +1607,8 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                     c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]
                 },
                 "pedestrian_requests": get_req_states(),
+                "pending_requests_set": list(pending_requests),
+                "next_cycle_requests_set": list(next_cycle_requests),
                 "vehicles": {d: [dict(v) for v in vehicles[d]] for d in vehicles},
                 "pedestrians": {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
                 "remaining_time": 0,
@@ -1646,3 +1619,407 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                 "step_index": total_step_counter,
             }
         )
+
+    def _generate_tick_events(
+        self,
+        sec: int,
+        duration: int,
+        row_hu: str,
+        vehicles: Dict[str, List[Dict[str, Any]]],
+        pedestrians: Dict[str, List[Dict[str, Any]]],
+        moving_veh_dirs: List[str],
+        moving_ped_crossings: List[str],
+        veh_is_green: bool,
+        ped_is_green: bool,
+        pending_requests: Set[str]
+    ) -> List[Tuple[str, str, Dict[str, Any], Dict[str, Any]]]:
+        tick_events: List[Tuple[str, str, Dict[str, Any], Dict[str, Any]]] = []
+
+        # 1. Igények lekérdezése / ellenőrzése
+        if sec == duration:
+            req_str = ", ".join(sorted(list(pending_requests))) if pending_requests else "nincs aktív igény"
+            tick_events.append((
+                "POLL_REQUESTS",
+                f"🔘 Gyalogos hívógomb igények kiértékelése: {req_str}.",
+                {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+                {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+            ))
+
+            # 2. Jelzőlámpák beállítása
+            tick_events.append((
+                "SET_SIGNALS",
+                f"🚦 Összesített jelzőlámpák beállítása: {row_hu}. Fázisidő: {duration} mp.",
+                {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+                {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+            ))
+
+        # 3. Kereszteződésben lévő járművek és gyalogosok továbbhaladása és távozása
+        for d in ["north", "south", "east", "west"]:
+            for v in vehicles[d]:
+                if v["status"] == "crossing":
+                    v["crossing_progress"] += 1
+                    if v["crossing_progress"] >= 3:
+                        v["status"] = "departed"
+
+        for c in ["north", "south", "east", "west"]:
+            for p in pedestrians[c]:
+                if p["status"] == "crossing":
+                    p["crossing_progress"] += 1
+                    if p["crossing_progress"] >= 3:
+                        p["status"] = "departed"
+
+        tick_events.append((
+            "PROCESS_CROSSINGS",
+            f"🚶🚗 Áthaladó járművek és gyalogosok továbbhaladása ({row_hu}).",
+            {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+            {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+        ))
+
+        # 4. Ütközés- és konfliktusmentesség ellenőrzése
+        veh_conflicts = False
+        for d in moving_veh_dirs:
+            conflicting_veh_dirs = ["east", "west"] if d in ["north", "south"] else ["north", "south"]
+            if any(cv["status"] == "crossing" for cd in conflicting_veh_dirs for cv in vehicles[cd]):
+                veh_conflicts = True
+                break
+            conflicting_peds = ["north", "south"] if d in ["north", "south"] else ["east", "west"]
+            if any(cp["status"] == "crossing" for c in conflicting_peds for cp in pedestrians[c]):
+                veh_conflicts = True
+                break
+
+        ped_conflicts = False
+        for c in moving_ped_crossings:
+            conflicting_vdirs = ["north", "south"] if c in ["north", "south"] else ["east", "west"]
+            if any(cv["status"] == "crossing" for cd in conflicting_vdirs for cv in vehicles[cd]):
+                ped_conflicts = True
+                break
+
+        has_conflict = veh_conflicts or ped_conflicts
+        movement_allowed = (veh_is_green and not has_conflict) or (ped_is_green and not has_conflict)
+
+        conflict_desc = "Biztonsági ellenőrzés: Ütközésmentes áthaladás engedélyezve." if movement_allowed else "Biztonsági ellenőrzés: Konfliktus vagy tilos jelzés, belépés tiltva."
+        tick_events.append((
+            "CHECK_CONFLICTS",
+            f"🔍 {conflict_desc}",
+            {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+            {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+        ))
+
+        # 5. Indítás és sor előreléptetés vagy megállítás
+        if movement_allowed:
+            if veh_is_green:
+                for d in moving_veh_dirs:
+                    for v in vehicles[d]:
+                        if v["status"] == "waiting" and v["queue_pos"] == 0:
+                            v["status"] = "crossing"
+                            v["crossing_progress"] = 1
+                            break
+
+            if ped_is_green:
+                for c in moving_ped_crossings:
+                    for p in pedestrians[c]:
+                        if p["status"] == "waiting" and p["queue_pos"] == 0:
+                            p["status"] = "crossing"
+                            p["crossing_progress"] = 1
+                            break
+
+            tick_events.append((
+                "START_MOVEMENTS",
+                f"🟢 Zöld jelzés: Engedélyezett forgalom belép az átkelőbe / kereszteződésbe ({row_hu}).",
+                {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+                {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+            ))
+
+            if veh_is_green:
+                for d in moving_veh_dirs:
+                    for v in vehicles[d]:
+                        if v["status"] == "queued":
+                            v["queue_pos"] -= 1
+                            if v["queue_pos"] == 0:
+                                v["status"] = "waiting"
+
+            if ped_is_green:
+                for c in moving_ped_crossings:
+                    for p in pedestrians[c]:
+                        if p["status"] == "queued":
+                            p["queue_pos"] -= 1
+                            if p["queue_pos"] == 0:
+                                p["status"] = "waiting"
+
+            tick_events.append((
+                "ADVANCE_QUEUES",
+                f"➡️ Várakozó sorok előrelépése a stopvonalhoz / járdaszegélyhez ({row_hu}).",
+                {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+                {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+            ))
+        else:
+            tick_events.append((
+                "HOLD_TRAFFIC",
+                f"⛔ Tilos jelzés vagy kiürítés: Forgalom visszatartása a megállás vonalánál ({row_hu}).",
+                {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+                {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+            ))
+
+        return tick_events
+
+    def generate_future_steps_from_step(self, current_step: VisualizationStep, current_index: int) -> List[VisualizationStep]:
+        """
+        Újragenerálja a jövőbeli szimulációs lépéseket az aktuális állapot pillanatképéből
+        az újonnan beérkezett gyalogos igények azonnali figyelembevételével.
+        """
+        extra = getattr(current_step, 'extra', {}) or {}
+        cur_phase = extra.get('phase', self.PHASE_INIT)
+        cur_rem_time = extra.get('remaining_time', 0)
+        cur_cycle = extra.get('cycle', 1)
+        total_cycles = extra.get('total_cycles', 2)
+
+        # Klónozzuk a pillanatnyi jármű és gyalogos állapotokat
+        vehicles = {
+            d: [dict(v) for v in extra.get('vehicles', {}).get(d, [])]
+            for d in ["north", "south", "east", "west"]
+        }
+        pedestrians = {
+            c: [dict(p) for p in extra.get('pedestrians', {}).get(c, [])]
+            for c in ["north", "south", "east", "west"]
+        }
+
+        pending_requests: Set[str] = set(self.runtime_requests)
+        next_cycle_requests: Set[str] = set(self.runtime_next_cycle_requests)
+
+        ns_green_sec = max(1, int(self.params.get("ns_green_duration") or 3))
+        ew_green_sec = max(1, int(self.params.get("ew_green_duration") or 3))
+        yellow_sec = max(1, int(self.params.get("yellow_duration") or 1))
+        all_red_sec = max(1, int(self.params.get("all_red_duration") or 1))
+        ped_walk_sec = max(1, int(self.params.get("ped_walk_duration") or 3))
+        ped_clear_sec = max(1, int(self.params.get("ped_clearance_duration") or 2))
+
+        future_steps: List[VisualizationStep] = []
+        step_counter = current_index
+
+        def count_metrics(v_snap, p_snap):
+            w_veh = sum(1 for d in v_snap for v in v_snap[d] if v["status"] in ("waiting", "queued"))
+            w_ped = sum(1 for c in p_snap for p in p_snap[c] if p["status"] in ("waiting", "queued"))
+            passed = sum(1 for d in v_snap for v in v_snap[d] if v["status"] == "departed") +                      sum(1 for c in p_snap for p in p_snap[c] if p["status"] == "departed")
+            return w_veh, w_ped, passed
+
+        def get_req_states():
+            return {c: (c in pending_requests or c in next_cycle_requests) for c in ["north", "south", "east", "west"]}
+
+        # Határozzuk meg a fázislistát a jelenlegi ciklus hátralévő részére és a jövőbeli ciklusokra
+        def get_cycle_phases(cycle_idx):
+            phase_list = [
+                (self.PHASE_NS_GREEN, {"red": False, "yellow": False, "green": True}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, ns_green_sec, "NORTH_SOUTH", "Észak-Dél járművek (Szabad út)", ["north", "south"], [], True, False),
+                (self.PHASE_NS_YELLOW, {"red": False, "yellow": True, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, yellow_sec, "NORTH_SOUTH", "Észak-Dél járművek (Sárga átmenet / Lassítás)", [], [], False, False),
+                (self.PHASE_CLEARANCE_1, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, all_red_sec, "NONE", "Biztonsági kiürítés (Minden lámpa PIROS)", [], [], False, False),
+                (self.PHASE_EW_GREEN, {"red": True, "yellow": False, "green": False}, {"red": False, "yellow": False, "green": True}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, ew_green_sec, "EAST_WEST", "Kelet-Nyugat járművek (Szabad út)", ["east", "west"], [], True, False),
+                (self.PHASE_EW_YELLOW, {"red": True, "yellow": False, "green": False}, {"red": False, "yellow": True, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, yellow_sec, "EAST_WEST", "Kelet-Nyugat járművek (Sárga átmenet / Lassítás)", [], [], False, False),
+                (self.PHASE_CLEARANCE_2, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, all_red_sec, "NONE", "Biztonsági kiürítés gyalogos fázis előtt (Minden PIROS)", [], [], False, False),
+            ]
+            return phase_list
+
+        start_cycle = max(1, cur_cycle)
+        for c_idx in range(start_cycle, total_cycles + 1):
+            if c_idx > start_cycle:
+                pending_requests.update(next_cycle_requests)
+                next_cycle_requests.clear()
+
+                step_counter += 1
+                w_v, w_p, passed_cnt = count_metrics(vehicles, pedestrians)
+                future_steps.append(VisualizationStep(
+                    explanation=f"🔄 {c_idx}. forgalmi ciklus indítása ({c_idx}/{total_cycles}). Ciklus kiértékelése.",
+                    code_line=self.get_line_for_tag("Python", "LOOP_START"),
+                    metrics={"comparisons": step_counter, "pass_num": c_idx, "remaining_time": 0, "cycle": c_idx},
+                    array=[w_v, w_p, passed_cnt],
+                    key=f"Ciklus {c_idx}",
+                    extra={
+                        "tag": "LOOP_START",
+                        "phase": "CYCLE_START",
+                        "phase_hu": f"{c_idx}. Ciklus",
+                        "operation": "LOOP_START",
+                        "right_of_way": "NONE",
+                        "right_of_way_hu": "Ciklusváltás folyamatban",
+                        "vehicle_lights": {"ns": {"red": True, "yellow": False, "green": False}, "ew": {"red": True, "yellow": False, "green": False}},
+                        "pedestrian_lights": {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]},
+                        "pedestrian_requests": get_req_states(),
+                        "pending_requests_set": list(pending_requests),
+                        "next_cycle_requests_set": list(next_cycle_requests),
+                        "vehicles": {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+                        "pedestrians": {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+                        "remaining_time": 0,
+                        "duration": 0,
+                        "step_duration_ms": 0,
+                        "cycle": c_idx,
+                        "total_cycles": total_cycles,
+                        "step_index": step_counter,
+                    }
+                ))
+
+            phases = get_cycle_phases(c_idx)
+
+            # Megkeressük, honnan kell folytatni az aktuális ciklusban
+            start_phase_idx = 0
+            if c_idx == start_cycle and cur_phase in [p[0] for p in phases]:
+                start_phase_idx = [p[0] for p in phases].index(cur_phase)
+
+            for p_idx in range(start_phase_idx, len(phases)):
+                phase_id, ns_light, ew_light, ped_light_map, duration, row_id, row_hu, moving_veh_dirs, moving_ped_crossings, veh_is_green, ped_is_green = phases[p_idx]
+                cur_veh_lights = {"ns": dict(ns_light), "ew": dict(ew_light)}
+                cur_ped_lights = {c: dict(l) for c, l in ped_light_map.items()}
+
+                start_sec = duration
+                if c_idx == start_cycle and p_idx == start_phase_idx:
+                    start_sec = max(1, cur_rem_time - 1) if cur_rem_time > 1 else 0
+
+                for sec in range(start_sec, 0, -1):
+                    tick_events = self._generate_tick_events(
+                        sec, duration, row_hu, vehicles, pedestrians,
+                        moving_veh_dirs, moving_ped_crossings,
+                        veh_is_green, ped_is_green, pending_requests
+                    )
+
+                    for ev_idx, (sem_tag, act_desc, v_snap, p_snap) in enumerate(tick_events):
+                        step_counter += 1
+                        is_last_in_tick = (ev_idx == len(tick_events) - 1)
+                        step_duration = 1000 if is_last_in_tick else 0
+                        w_v, w_p, passed_cnt = count_metrics(v_snap, p_snap)
+                        explanation = f"{act_desc} Hátralévő fázisidő: {sec} mp."
+
+                        future_steps.append(VisualizationStep(
+                            explanation=explanation,
+                            code_line=self.get_line_for_tag("Python", sem_tag),
+                            metrics={
+                                "comparisons": step_counter,
+                                "pass_num": c_idx,
+                                "remaining_time": sec,
+                                "cycle": c_idx,
+                            },
+                            array=[w_v, w_p, passed_cnt],
+                            key=self.PHASE_NAMES_HU[phase_id],
+                            extra={
+                                "tag": sem_tag,
+                                "phase": phase_id,
+                                "phase_hu": self.PHASE_NAMES_HU[phase_id],
+                                "operation": sem_tag,
+                                "right_of_way": row_id,
+                                "right_of_way_hu": row_hu,
+                                "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
+                                "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
+                                "pedestrian_requests": get_req_states(),
+                                "pending_requests_set": list(pending_requests),
+                                "next_cycle_requests_set": list(next_cycle_requests),
+                                "vehicles": v_snap,
+                                "pedestrians": p_snap,
+                                "remaining_time": sec,
+                                "duration": duration,
+                                "step_duration_ms": step_duration,
+                                "cycle": c_idx,
+                                "total_cycles": total_cycles,
+                                "step_index": step_counter,
+                            }
+                        ))
+
+            # Ha van igény, lefut a gyalogos fázis
+            if pending_requests:
+                active_serviced = set(pending_requests)
+                pending_requests.difference_update(active_serviced)
+
+                ped_phases = [
+                    (self.PHASE_PED_WALK, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": (c not in active_serviced), "green": (c in active_serviced)} for c in ["north", "south", "east", "west"]}, ped_walk_sec, "PEDESTRIANS", "Gyalogos forgalom (ZÖLD jelzés az igényelt átkelőkön)", [], list(active_serviced), False, True),
+                    (self.PHASE_PED_CLEARANCE, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, ped_clear_sec, "PEDESTRIANS", "Gyalogos kiürítés (Jelzőlámpák PIROSAK, átkelők befejezése)", [], [], False, False),
+                    (self.PHASE_CLEARANCE_3, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, all_red_sec, "NONE", "Biztonsági kiürítés új ciklus előtt (Minden PIROS)", [], [], False, False),
+                ]
+
+                start_ped_idx = 0
+                if c_idx == start_cycle and cur_phase in [p[0] for p in ped_phases]:
+                    start_ped_idx = [p[0] for p in ped_phases].index(cur_phase)
+
+                for p_idx in range(start_ped_idx, len(ped_phases)):
+                    phase_id, ns_light, ew_light, ped_light_map, duration, row_id, row_hu, moving_veh_dirs, moving_ped_crossings, veh_is_green, ped_is_green = ped_phases[p_idx]
+                    cur_veh_lights = {"ns": dict(ns_light), "ew": dict(ew_light)}
+                    cur_ped_lights = {c: dict(l) for c, l in ped_light_map.items()}
+
+                    start_sec = duration
+                    if c_idx == start_cycle and p_idx == start_ped_idx:
+                        start_sec = max(1, cur_rem_time - 1) if cur_rem_time > 1 else 0
+
+                    for sec in range(start_sec, 0, -1):
+                        tick_events = self._generate_tick_events(
+                            sec, duration, row_hu, vehicles, pedestrians,
+                            moving_veh_dirs, moving_ped_crossings,
+                            veh_is_green, ped_is_green, pending_requests
+                        )
+
+                        for ev_idx, (sem_tag, act_desc, v_snap, p_snap) in enumerate(tick_events):
+                            step_counter += 1
+                            is_last_in_tick = (ev_idx == len(tick_events) - 1)
+                            step_duration = 1000 if is_last_in_tick else 0
+                            w_v, w_p, passed_cnt = count_metrics(v_snap, p_snap)
+                            explanation = f"{act_desc} Hátralévő fázisidő: {sec} mp."
+
+                            future_steps.append(VisualizationStep(
+                                explanation=explanation,
+                                code_line=self.get_line_for_tag("Python", sem_tag),
+                                metrics={
+                                    "comparisons": step_counter,
+                                    "pass_num": c_idx,
+                                    "remaining_time": sec,
+                                    "cycle": c_idx,
+                                },
+                                array=[w_v, w_p, passed_cnt],
+                                key=self.PHASE_NAMES_HU[phase_id],
+                                extra={
+                                    "tag": sem_tag,
+                                    "phase": phase_id,
+                                    "phase_hu": self.PHASE_NAMES_HU[phase_id],
+                                    "operation": sem_tag,
+                                    "right_of_way": row_id,
+                                    "right_of_way_hu": row_hu,
+                                    "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
+                                    "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
+                                    "pedestrian_requests": get_req_states(),
+                                    "pending_requests_set": list(pending_requests),
+                                    "next_cycle_requests_set": list(next_cycle_requests),
+                                    "vehicles": v_snap,
+                                    "pedestrians": p_snap,
+                                    "remaining_time": sec,
+                                    "duration": duration,
+                                    "step_duration_ms": step_duration,
+                                    "cycle": c_idx,
+                                    "total_cycles": total_cycles,
+                                    "step_index": step_counter,
+                                }
+                            ))
+
+        # COMPLETE LÉPÉS
+        step_counter += 1
+        w_v, w_p, passed_cnt = count_metrics(vehicles, pedestrians)
+        future_steps.append(VisualizationStep(
+            explanation=f"✅ Kereszteződés és gyalogos szimuláció befejeződött: {total_cycles} ciklus sikeresen lefutott, teljes forgalom koordinálva.",
+            code_line=self.get_line_for_tag("Python", "COMPLETE"),
+            metrics={"comparisons": step_counter, "pass_num": total_cycles, "remaining_time": 0, "cycle": total_cycles},
+            array=[w_v, w_p, passed_cnt],
+            key="KÉSZ",
+            extra={
+                "tag": "COMPLETE",
+                "phase": self.PHASE_COMPLETED,
+                "phase_hu": self.PHASE_NAMES_HU[self.PHASE_COMPLETED],
+                "operation": "COMPLETE",
+                "right_of_way": "NONE",
+                "right_of_way_hu": "Szimuláció véget ért",
+                "vehicle_lights": {"ns": {"red": True, "yellow": False, "green": False}, "ew": {"red": True, "yellow": False, "green": False}},
+                "pedestrian_lights": {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]},
+                "pedestrian_requests": get_req_states(),
+                "pending_requests_set": list(pending_requests),
+                "next_cycle_requests_set": list(next_cycle_requests),
+                "vehicles": {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+                "pedestrians": {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+                "remaining_time": 0,
+                "duration": 0,
+                "step_duration_ms": 1000,
+                "cycle": total_cycles,
+                "total_cycles": total_cycles,
+                "step_index": step_counter,
+            }
+        ))
+
+        return future_steps

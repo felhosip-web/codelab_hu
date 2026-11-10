@@ -429,6 +429,13 @@ class MainWindow(QMainWindow):
                     self.viz_stack.addWidget(custom_widget)
             widget = self.plugin_visualizers.get(p_id)
             if widget is not None:
+                if hasattr(widget, "set_engine"):
+                    widget.set_engine(self.engine)
+                if hasattr(widget, "set_plugin"):
+                    widget.set_plugin(self.current_plugin)
+                if hasattr(widget, "request_made") and not getattr(widget, "_connected_to_mw", False):
+                    widget.request_made.connect(self.on_pedestrian_request_event)
+                    widget._connected_to_mw = True
                 self.viz_stack.setCurrentWidget(widget)
                 return
         self.viz_stack.setCurrentWidget(self.array_viewer)
@@ -458,6 +465,15 @@ class MainWindow(QMainWindow):
         self.update_plugin_info()
         self.update_input_panel_state()
         self.reset()
+
+    def on_pedestrian_request_event(self, crossing: str):
+        """Kezeli a vizualizációból érkező valós idejű gyalogos igény eseményt."""
+        self.steps = self.engine.steps
+        if self.steps:
+            self.bottom_progress_slider.setRange(0, len(self.steps) - 1)
+            self.bottom_progress_label.setText(f"{self.current_step_idx + 1}/{len(self.steps)}")
+            if 0 <= self.current_step_idx < len(self.steps):
+                self.show_step(self.steps[self.current_step_idx])
 
     def sync_from_engine(self):
         self.steps = self.engine.steps

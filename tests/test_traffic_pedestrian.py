@@ -34,6 +34,8 @@ class TestTrafficPedestrianPlugin(unittest.TestCase):
 
     def setUp(self):
         self.plugin = TrafficPedestrianIntersectionPlugin()
+        self.plugin.runtime_requests.clear()
+        self.plugin.runtime_next_cycle_requests.clear()
 
     def test_plugin_metadata(self):
         self.assertEqual(self.plugin.id, "traffic_pedestrian_intersection")
@@ -94,6 +96,7 @@ class TestTrafficPedestrianPlugin(unittest.TestCase):
 
     def test_semantic_step_metadata_tracking(self):
         """Minden szimulációs lépésnek konkrét szemantikai műveletet kell hordoznia."""
+        self.plugin.set_param("pedestrian_requests", "north,south")
         steps = list(self.plugin.get_steps())
         emitted_tags = set()
         for step in steps:
@@ -137,10 +140,8 @@ class TestTrafficPedestrianPlugin(unittest.TestCase):
         KRITIKUS BIZTONSÁGI INVARIÁNS:
         Egyetlen lépésben sem fordulhat elő, hogy egy járműirány és a vele ütköző
         gyalogosátkelő egyszerre zöld jelzést kap!
-        NS jármű zöld esetén a North és South gyalogosátkelő SOHA nem kaphat zöldet.
-        EW jármű zöld esetén az East és West gyalogosátkelő SOHA nem kaphat zöldet.
-        Bármely gyalogos zöld jelzés esetén a konfliktáló járműirány SOHA nem kaphat zöldet/sárgát.
         """
+        self.plugin.set_param("pedestrian_requests", "north,south,east,west")
         steps = list(self.plugin.get_steps())
         for step in steps:
             extra = step.extra
@@ -155,13 +156,10 @@ class TestTrafficPedestrianPlugin(unittest.TestCase):
             east_ped_green = p_lights.get("east", {}).get("green", False)
             west_ped_green = p_lights.get("west", {}).get("green", False)
 
-            # 1. Jármű-jármű konfliktus kizárása
-            self.assertFalse(
-                ns_veh_green and ew_veh_green,
-                f"Conflicting vehicle greens in step: {step.explanation}"
-            )
+            # Jármű-jármű konfliktus kizárása
+            self.assertFalse(ns_veh_green and ew_veh_green, f"Conflicting vehicle greens in step: {step.explanation}")
 
-            # 2. Jármű-gyalogos konfliktus kizárása
+            # Jármű-gyalogos konfliktus kizárása
             if ns_veh_green:
                 self.assertFalse(north_ped_green, f"Conflicting NS vehicle green and North ped green at {step.explanation}")
                 self.assertFalse(south_ped_green, f"Conflicting NS vehicle green and South ped green at {step.explanation}")
@@ -170,7 +168,7 @@ class TestTrafficPedestrianPlugin(unittest.TestCase):
                 self.assertFalse(east_ped_green, f"Conflicting EW vehicle green and East ped green at {step.explanation}")
                 self.assertFalse(west_ped_green, f"Conflicting EW vehicle green and West ped green at {step.explanation}")
 
-            # 3. Ha gyalogos zöld, a konfliktáló jármű kötelezően PIROS
+            # Ha gyalogos zöld, a konfliktáló jármű kötelezően PIROS
             if north_ped_green or south_ped_green:
                 self.assertTrue(v_lights.get("ns", {}).get("red", False))
                 self.assertFalse(v_lights.get("ns", {}).get("green", False))
@@ -183,6 +181,7 @@ class TestTrafficPedestrianPlugin(unittest.TestCase):
 
     def test_pedestrian_cannot_enter_on_red_signal(self):
         """Gyalogos nem léphet be a zebrára (nem kezdheti meg az átkelést), ha a gyalogoslámpa PIROS."""
+        self.plugin.set_param("pedestrian_requests", "north,east")
         steps = list(self.plugin.get_steps())
         for i in range(1, len(steps)):
             prev_peds = steps[i - 1].extra.get("pedestrians", {})
@@ -209,17 +208,17 @@ class TestTrafficPedestrianPlugin(unittest.TestCase):
         A gyalogos zöld fázist gyalogos kiürítési fázis (PED_CLEARANCE) követi,
         ahol a gyalogos lámpa már piros, és a járművek még szigorúan pirosat kapnak.
         """
+        self.plugin.set_param("pedestrian_requests", "north,south")
         steps = list(self.plugin.get_steps())
         ped_walk_seen = False
         ped_clear_seen = False
 
-        for i, step in enumerate(steps):
+        for step in steps:
             phase = step.extra.get("phase")
             if phase == "PED_WALK":
                 ped_walk_seen = True
             elif phase == "PED_CLEARANCE":
                 ped_clear_seen = True
-                # A kiürítési időszak alatt az összes járműlámpának PIROSNAK kell lennie!
                 v_lights = step.extra["vehicle_lights"]
                 self.assertTrue(v_lights["ns"]["red"])
                 self.assertTrue(v_lights["ew"]["red"])
@@ -229,29 +228,93 @@ class TestTrafficPedestrianPlugin(unittest.TestCase):
         self.assertTrue(ped_walk_seen)
         self.assertTrue(ped_clear_seen)
 
-    def test_deterministic_pedestrian_requests_and_duplicates(self):
-        """Gyalogos igények kezelése: duplikációk szűrése, érvényes irányok rögzítése."""
-        self.plugin.set_param("pedestrian_requests", "north,north,north, south , EAST,invalid_dir")
-        steps = list(self.plugin.get_steps())
-        init_step = steps[0]
-        reqs = init_step.extra["pedestrian_requests"]
-
-        self.assertTrue(reqs["north"])
-        self.assertTrue(reqs["south"])
-        self.assertTrue(reqs["east"])
-        self.assertFalse(reqs["west"])
-        self.assertNotIn("invalid_dir", reqs)
-
-    def test_empty_requests_fallback(self):
-        """Ha nincs megadva egyetlen igény sem, a szimuláció biztonságosan lefut hiba nélkül."""
+    def test_no_request_policy_skips_pedestrian_phase(self):
+        """Ha nincs gyalogos kérelem, a gyalogos fázis nem kerül ütemezésre."""
         self.plugin.set_param("pedestrian_requests", "")
         steps = list(self.plugin.get_steps())
-        self.assertGreater(len(steps), 0)
+        phases = set(s.extra.get("phase") for s in steps)
+        self.assertNotIn("PED_WALK", phases)
+        self.assertNotIn("PED_CLEARANCE", phases)
+        self.assertIn("NS_GREEN", phases)
+        self.assertIn("EW_GREEN", phases)
         self.assertEqual(steps[-1].extra["tag"], "COMPLETE")
+
+    def test_runtime_request_delivery_and_future_regeneration(self):
+        """
+        P0 Teszt: Valós idejű kérelem érkezése az aktív szimulációhoz.
+        Kezdetben nincs kérés -> szimuláció elindul -> kérés érkezik -> jövőbeli fázisban
+        automatikusan megjelenik a gyalogos zöld fázis!
+        """
+        self.plugin.set_param("pedestrian_requests", "")
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        init_len = len(engine.steps)
+        self.assertFalse(any(s.extra.get("phase") == "PED_WALK" for s in engine.steps))
+
+        # Haladunk 6 lépést (jármű fázisban járunk)
+        for _ in range(6):
+            engine.next_step()
+
+        curr_phase = engine.steps[engine.step_idx].extra["phase"]
+        self.assertEqual(curr_phase, "NS_GREEN")
+
+        # Runtime hívógomb megnyomása Észak átkelőre
+        success = self.plugin.register_pedestrian_request("north", engine=engine)
+        self.assertTrue(success)
+
+        # A jövőbeli lépések most már tartalmazzák a gyalogos fázist
+        future_steps = engine.steps[engine.step_idx + 1:]
+        future_phases = set(s.extra.get("phase") for s in future_steps)
+        self.assertIn("PED_WALK", future_phases)
+        self.assertIn("PED_CLEARANCE", future_phases)
+
+        # Ellenőrizzük, hogy a hívógomb jelzése aktív a kiszolgálásig (1. ciklusban a PED_WALK előtt)
+        for s in future_steps:
+            if s.extra.get("cycle") == 1 and s.extra.get("phase") in ("NS_GREEN", "NS_YELLOW", "CLEARANCE_1", "EW_GREEN", "EW_YELLOW", "CLEARANCE_2"):
+                self.assertTrue(s.extra.get("pedestrian_requests", {}).get("north", False))
+
+    def test_repeated_and_simultaneous_requests(self):
+        """Többszöri és egyidejű kérések determinisztikus kezelése."""
+        self.plugin.set_param("pedestrian_requests", "")
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        # Ismételt kattintás ugyanarra az átkelőre nem duplikál
+        self.plugin.register_pedestrian_request("south", engine=engine)
+        self.plugin.register_pedestrian_request("south", engine=engine)
+        self.plugin.register_pedestrian_request("south", engine=engine)
+
+        self.assertEqual(self.plugin.runtime_requests, {"south"})
+
+        # Egyidejű kérések több átkelőről
+        self.plugin.register_pedestrian_request("west", engine=engine)
+        self.assertEqual(self.plugin.runtime_requests, {"south", "west"})
+
+    def test_request_during_active_crossing_queued_for_next_cycle(self):
+        """
+        Ha egy átkelő már zöldben van (aktív átkelés zajlik), az újabb gombnyomást
+        a következő ciklusra kell ütemezni, nem szakíthatja meg vagy hosszabbíthatja meg
+        szabálytalanul a jelenlegi fázist.
+        """
+        self.plugin.set_param("pedestrian_requests", "north")
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        # Megkeressük az első PED_WALK lépést
+        walk_idx = next(i for i, s in enumerate(engine.steps) if s.extra.get("phase") == "PED_WALK")
+        engine.step_idx = walk_idx
+
+        # Kérés érkezik 'north' átkelőre az aktív zöld alatt
+        self.plugin.register_pedestrian_request("north", engine=engine)
+        self.assertIn("north", self.plugin.runtime_next_cycle_requests)
 
 
 class TestTrafficPedestrianIntegration(unittest.TestCase):
-    """Integrációs és modulváltási tesztek a Phase 3-hoz."""
+    """Integrációs, motor és felületi tesztek."""
 
     def test_plugin_discovery_and_categorization(self):
         loader = PluginLoader()
@@ -289,6 +352,49 @@ class TestTrafficPedestrianIntegration(unittest.TestCase):
         prev = engine.prev_step()
         self.assertIsNotNone(prev)
         self.assertEqual(engine.step_idx, 0)
+
+    def test_engine_register_pedestrian_request_method(self):
+        """Engine.register_pedestrian_request() sikeresen delegál az aktív pluginhoz."""
+        loader = PluginLoader()
+        loader.load_all()
+        p3 = loader.get_plugin("traffic_pedestrian_intersection")
+
+        engine = Engine()
+        engine.set_plugin(p3)
+        engine.generate_steps()
+
+        res = engine.register_pedestrian_request("east")
+        self.assertTrue(res)
+        self.assertIn("east", p3.runtime_requests)
+
+    @unittest.skipUnless(HAS_QT, "PySide6 required for UI testing")
+    def test_widget_interactive_buttons(self):
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        app = QApplication.instance() or QApplication([])
+
+        widget = TrafficPedestrianIntersectionViewerWidget()
+        plugin = TrafficPedestrianIntersectionPlugin()
+        engine = Engine()
+        engine.set_plugin(plugin)
+        engine.generate_steps()
+
+        widget.set_plugin(plugin)
+        widget.set_engine(engine)
+
+        received_requests = []
+        widget.request_made.connect(lambda c: received_requests.append(c))
+
+        # Kattintunk a panelen lévő Észak gombra
+        widget.btn_north.click()
+        self.assertIn("north", received_requests)
+        self.assertIn("north", plugin.runtime_requests)
+
+        # Kattintunk a vászon gombra
+        widget.canvas.crossing_requested.emit("south")
+        self.assertIn("south", received_requests)
+        self.assertIn("south", plugin.runtime_requests)
+
+        widget.deleteLater()
 
 
 if __name__ == "__main__":
