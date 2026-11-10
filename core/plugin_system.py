@@ -39,6 +39,7 @@ class AlgorithmPluginBase:
 FEATURE_MAPPINGS: Dict[str, str] = {
     # Simulation & Traffic Light
     "traffic_light": "simulation",
+    "traffic_intersection": "simulation",
     "traffic": "simulation",
     "simulation": "simulation",
 
