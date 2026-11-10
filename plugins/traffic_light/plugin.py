@@ -1766,14 +1766,17 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
         """
         Újragenerálja a jövőbeli szimulációs lépéseket az aktuális állapot pillanatképéből
         az újonnan beérkezett gyalogos igények azonnali figyelembevételével.
+        Garantálja, hogy a már lefutott fázisok vagy másodpercek nem ismétlődnek meg,
+        a hátralévő fázisidő pontosan megmarad, és nincsenek átfedő vagy elvesző események.
         """
         extra = getattr(current_step, 'extra', {}) or {}
+        cur_tag = extra.get('tag', 'INIT')
         cur_phase = extra.get('phase', self.PHASE_INIT)
         cur_rem_time = extra.get('remaining_time', 0)
-        cur_cycle = extra.get('cycle', 1)
+        cur_cycle = extra.get('cycle', 0)
         total_cycles = extra.get('total_cycles', 2)
+        step_duration_ms = extra.get('step_duration_ms', 1000)
 
-        # Klónozzuk a pillanatnyi jármű és gyalogos állapotokat
         vehicles = {
             d: [dict(v) for v in extra.get('vehicles', {}).get(d, [])]
             for d in ["north", "south", "east", "west"]
@@ -1805,9 +1808,8 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
         def get_req_states():
             return {c: (c in pending_requests or c in next_cycle_requests) for c in ["north", "south", "east", "west"]}
 
-        # Határozzuk meg a fázislistát a jelenlegi ciklus hátralévő részére és a jövőbeli ciklusokra
-        def get_cycle_phases(cycle_idx):
-            phase_list = [
+        def get_cycle_vehicle_phases():
+            return [
                 (self.PHASE_NS_GREEN, {"red": False, "yellow": False, "green": True}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, ns_green_sec, "NORTH_SOUTH", "Észak-Dél járművek (Szabad út)", ["north", "south"], [], True, False),
                 (self.PHASE_NS_YELLOW, {"red": False, "yellow": True, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, yellow_sec, "NORTH_SOUTH", "Észak-Dél járművek (Sárga átmenet / Lassítás)", [], [], False, False),
                 (self.PHASE_CLEARANCE_1, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, all_red_sec, "NONE", "Biztonsági kiürítés (Minden lámpa PIROS)", [], [], False, False),
@@ -1815,9 +1817,50 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                 (self.PHASE_EW_YELLOW, {"red": True, "yellow": False, "green": False}, {"red": False, "yellow": True, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, yellow_sec, "EAST_WEST", "Kelet-Nyugat járművek (Sárga átmenet / Lassítás)", [], [], False, False),
                 (self.PHASE_CLEARANCE_2, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, all_red_sec, "NONE", "Biztonsági kiürítés gyalogos fázis előtt (Minden PIROS)", [], [], False, False),
             ]
-            return phase_list
 
-        start_cycle = max(1, cur_cycle)
+        def get_cycle_ped_phases(active_serviced):
+            return [
+                (self.PHASE_PED_WALK, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": (c not in active_serviced), "green": (c in active_serviced)} for c in ["north", "south", "east", "west"]}, ped_walk_sec, "PEDESTRIANS", "Gyalogos forgalom (ZÖLD jelzés az igényelt átkelőkön)", [], list(active_serviced), False, True),
+                (self.PHASE_PED_CLEARANCE, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, ped_clear_sec, "PEDESTRIANS", "Gyalogos kiürítés (Jelzőlámpák PIROSAK, átkelők befejezése)", [], [], False, False),
+                (self.PHASE_CLEARANCE_3, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, all_red_sec, "NONE", "Biztonsági kiürítés új ciklus előtt (Minden PIROS)", [], [], False, False),
+            ]
+
+        # Kezdő ciklus meghatározása
+        start_cycle = max(1, cur_cycle if cur_cycle > 0 else 1)
+
+        # Ha INIT fázisban voltunk, kiadjuk a ciklusfejet
+        if cur_tag == 'INIT':
+            step_counter += 1
+            w_v, w_p, passed_cnt = count_metrics(vehicles, pedestrians)
+            future_steps.append(VisualizationStep(
+                explanation=f"🔄 1. forgalmi ciklus indítása (1/{total_cycles}). Ciklus kiértékelése.",
+                code_line=self.get_line_for_tag("Python", "LOOP_START"),
+                metrics={"comparisons": step_counter, "pass_num": 1, "remaining_time": 0, "cycle": 1},
+                array=[w_v, w_p, passed_cnt],
+                key="Ciklus 1",
+                extra={
+                    "tag": "LOOP_START",
+                    "phase": "CYCLE_START",
+                    "phase_hu": "1. Ciklus",
+                    "operation": "LOOP_START",
+                    "right_of_way": "NONE",
+                    "right_of_way_hu": "Ciklusváltás folyamatban",
+                    "vehicle_lights": {"ns": {"red": True, "yellow": False, "green": False}, "ew": {"red": True, "yellow": False, "green": False}},
+                    "pedestrian_lights": {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]},
+                    "pedestrian_requests": get_req_states(),
+                    "pending_requests_set": list(pending_requests),
+                    "next_cycle_requests_set": list(next_cycle_requests),
+                    "vehicles": {d: [dict(v) for v in vehicles[d]] for d in vehicles},
+                    "pedestrians": {c: [dict(p) for p in pedestrians[c]] for c in pedestrians},
+                    "remaining_time": 0,
+                    "duration": 0,
+                    "step_duration_ms": 0,
+                    "cycle": 1,
+                    "total_cycles": total_cycles,
+                    "step_index": step_counter,
+                }
+            ))
+
         for c_idx in range(start_cycle, total_cycles + 1):
             if c_idx > start_cycle:
                 pending_requests.update(next_cycle_requests)
@@ -1854,93 +1897,71 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                     }
                 ))
 
-            phases = get_cycle_phases(c_idx)
+            v_phases = get_cycle_vehicle_phases()
+            v_phase_ids = [p[0] for p in v_phases]
 
-            # Megkeressük, honnan kell folytatni az aktuális ciklusban
-            start_phase_idx = 0
-            if c_idx == start_cycle and cur_phase in [p[0] for p in phases]:
-                start_phase_idx = [p[0] for p in phases].index(cur_phase)
+            # Határozzuk meg a járműfázisok kezdőpontját az aktuális ciklusban
+            start_v_idx = 0
+            is_in_ped_phase_currently = False
 
-            for p_idx in range(start_phase_idx, len(phases)):
-                phase_id, ns_light, ew_light, ped_light_map, duration, row_id, row_hu, moving_veh_dirs, moving_ped_crossings, veh_is_green, ped_is_green = phases[p_idx]
-                cur_veh_lights = {"ns": dict(ns_light), "ew": dict(ew_light)}
-                cur_ped_lights = {c: dict(l) for c, l in ped_light_map.items()}
+            if c_idx == start_cycle and cur_phase in v_phase_ids:
+                start_v_idx = v_phase_ids.index(cur_phase)
+            elif c_idx == start_cycle and cur_phase in (self.PHASE_PED_WALK, self.PHASE_PED_CLEARANCE, self.PHASE_CLEARANCE_3):
+                is_in_ped_phase_currently = True
+                start_v_idx = len(v_phases)  # Járműfázisok ezen ciklusban már lefutottak
 
-                start_sec = duration
-                if c_idx == start_cycle and p_idx == start_phase_idx:
-                    start_sec = max(1, cur_rem_time - 1) if cur_rem_time > 1 else 0
-
-                for sec in range(start_sec, 0, -1):
-                    tick_events = self._generate_tick_events(
-                        sec, duration, row_hu, vehicles, pedestrians,
-                        moving_veh_dirs, moving_ped_crossings,
-                        veh_is_green, ped_is_green, pending_requests
-                    )
-
-                    for ev_idx, (sem_tag, act_desc, v_snap, p_snap) in enumerate(tick_events):
-                        step_counter += 1
-                        is_last_in_tick = (ev_idx == len(tick_events) - 1)
-                        step_duration = 1000 if is_last_in_tick else 0
-                        w_v, w_p, passed_cnt = count_metrics(v_snap, p_snap)
-                        explanation = f"{act_desc} Hátralévő fázisidő: {sec} mp."
-
-                        future_steps.append(VisualizationStep(
-                            explanation=explanation,
-                            code_line=self.get_line_for_tag("Python", sem_tag),
-                            metrics={
-                                "comparisons": step_counter,
-                                "pass_num": c_idx,
-                                "remaining_time": sec,
-                                "cycle": c_idx,
-                            },
-                            array=[w_v, w_p, passed_cnt],
-                            key=self.PHASE_NAMES_HU[phase_id],
-                            extra={
-                                "tag": sem_tag,
-                                "phase": phase_id,
-                                "phase_hu": self.PHASE_NAMES_HU[phase_id],
-                                "operation": sem_tag,
-                                "right_of_way": row_id,
-                                "right_of_way_hu": row_hu,
-                                "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
-                                "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
-                                "pedestrian_requests": get_req_states(),
-                                "pending_requests_set": list(pending_requests),
-                                "next_cycle_requests_set": list(next_cycle_requests),
-                                "vehicles": v_snap,
-                                "pedestrians": p_snap,
-                                "remaining_time": sec,
-                                "duration": duration,
-                                "step_duration_ms": step_duration,
-                                "cycle": c_idx,
-                                "total_cycles": total_cycles,
-                                "step_index": step_counter,
-                            }
-                        ))
-
-            # Ha van igény, lefut a gyalogos fázis
-            if pending_requests:
-                active_serviced = set(pending_requests)
-                pending_requests.difference_update(active_serviced)
-
-                ped_phases = [
-                    (self.PHASE_PED_WALK, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": (c not in active_serviced), "green": (c in active_serviced)} for c in ["north", "south", "east", "west"]}, ped_walk_sec, "PEDESTRIANS", "Gyalogos forgalom (ZÖLD jelzés az igényelt átkelőkön)", [], list(active_serviced), False, True),
-                    (self.PHASE_PED_CLEARANCE, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, ped_clear_sec, "PEDESTRIANS", "Gyalogos kiürítés (Jelzőlámpák PIROSAK, átkelők befejezése)", [], [], False, False),
-                    (self.PHASE_CLEARANCE_3, {"red": True, "yellow": False, "green": False}, {"red": True, "yellow": False, "green": False}, {c: {"red": True, "green": False} for c in ["north", "south", "east", "west"]}, all_red_sec, "NONE", "Biztonsági kiürítés új ciklus előtt (Minden PIROS)", [], [], False, False),
-                ]
-
-                start_ped_idx = 0
-                if c_idx == start_cycle and cur_phase in [p[0] for p in ped_phases]:
-                    start_ped_idx = [p[0] for p in ped_phases].index(cur_phase)
-
-                for p_idx in range(start_ped_idx, len(ped_phases)):
-                    phase_id, ns_light, ew_light, ped_light_map, duration, row_id, row_hu, moving_veh_dirs, moving_ped_crossings, veh_is_green, ped_is_green = ped_phases[p_idx]
+            if not is_in_ped_phase_currently:
+                for p_idx in range(start_v_idx, len(v_phases)):
+                    phase_id, ns_light, ew_light, ped_light_map, duration, row_id, row_hu, moving_veh_dirs, moving_ped_crossings, veh_is_green, ped_is_green = v_phases[p_idx]
                     cur_veh_lights = {"ns": dict(ns_light), "ew": dict(ew_light)}
                     cur_ped_lights = {c: dict(l) for c, l in ped_light_map.items()}
 
-                    start_sec = duration
-                    if c_idx == start_cycle and p_idx == start_ped_idx:
-                        start_sec = max(1, cur_rem_time - 1) if cur_rem_time > 1 else 0
+                    if c_idx == start_cycle and p_idx == start_v_idx and cur_phase == phase_id:
+                        # Ugyanabban a fázisban vagyunk:
+                        # 1. Ha a jelenlegi lépés a tick KÖZEPÉN állt (step_duration_ms == 0),
+                        #    generáljuk le a jelenlegi másodperc HÁTRALÉVŐ rész-eseményeit!
+                        if step_duration_ms == 0 and cur_rem_time >= 1:
+                            tick_events = self._generate_tick_events(
+                                cur_rem_time, duration, row_hu, vehicles, pedestrians,
+                                moving_veh_dirs, moving_ped_crossings,
+                                veh_is_green, ped_is_green, pending_requests
+                            )
+                            # Megkeressük, hol állt a jelenlegi esemény
+                            cur_ev_idx = -1
+                            for idx, (stag, _, _, _) in enumerate(tick_events):
+                                if stag == cur_tag:
+                                    cur_ev_idx = idx
+                                    break
+                            remaining_events = tick_events[cur_ev_idx + 1:] if cur_ev_idx >= 0 else []
+                            for ev_idx, (sem_tag, act_desc, v_snap, p_snap) in enumerate(remaining_events):
+                                step_counter += 1
+                                is_last_in_tick = (ev_idx == len(remaining_events) - 1)
+                                step_dur = 1000 if is_last_in_tick else 0
+                                w_v, w_p, passed_cnt = count_metrics(v_snap, p_snap)
+                                future_steps.append(VisualizationStep(
+                                    explanation=f"{act_desc} Hátralévő fázisidő: {cur_rem_time} mp.",
+                                    code_line=self.get_line_for_tag("Python", sem_tag),
+                                    metrics={"comparisons": step_counter, "pass_num": c_idx, "remaining_time": cur_rem_time, "cycle": c_idx},
+                                    array=[w_v, w_p, passed_cnt],
+                                    key=self.PHASE_NAMES_HU[phase_id],
+                                    extra={
+                                        "tag": sem_tag, "phase": phase_id, "phase_hu": self.PHASE_NAMES_HU[phase_id],
+                                        "operation": sem_tag, "right_of_way": row_id, "right_of_way_hu": row_hu,
+                                        "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
+                                        "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
+                                        "pedestrian_requests": get_req_states(),
+                                        "pending_requests_set": list(pending_requests),
+                                        "next_cycle_requests_set": list(next_cycle_requests),
+                                        "vehicles": v_snap, "pedestrians": p_snap,
+                                        "remaining_time": cur_rem_time, "duration": duration,
+                                        "step_duration_ms": step_dur, "cycle": c_idx, "total_cycles": total_cycles,
+                                        "step_index": step_counter,
+                                    }
+                                ))
+                        # 2. A hátralévő teljes másodpercek
+                        start_sec = cur_rem_time - 1
+                    else:
+                        start_sec = duration
 
                     for sec in range(start_sec, 0, -1):
                         tick_events = self._generate_tick_events(
@@ -1948,47 +1969,124 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
                             moving_veh_dirs, moving_ped_crossings,
                             veh_is_green, ped_is_green, pending_requests
                         )
-
                         for ev_idx, (sem_tag, act_desc, v_snap, p_snap) in enumerate(tick_events):
                             step_counter += 1
                             is_last_in_tick = (ev_idx == len(tick_events) - 1)
-                            step_duration = 1000 if is_last_in_tick else 0
+                            step_dur = 1000 if is_last_in_tick else 0
                             w_v, w_p, passed_cnt = count_metrics(v_snap, p_snap)
-                            explanation = f"{act_desc} Hátralévő fázisidő: {sec} mp."
-
                             future_steps.append(VisualizationStep(
-                                explanation=explanation,
+                                explanation=f"{act_desc} Hátralévő fázisidő: {sec} mp.",
                                 code_line=self.get_line_for_tag("Python", sem_tag),
-                                metrics={
-                                    "comparisons": step_counter,
-                                    "pass_num": c_idx,
-                                    "remaining_time": sec,
-                                    "cycle": c_idx,
-                                },
+                                metrics={"comparisons": step_counter, "pass_num": c_idx, "remaining_time": sec, "cycle": c_idx},
                                 array=[w_v, w_p, passed_cnt],
                                 key=self.PHASE_NAMES_HU[phase_id],
                                 extra={
-                                    "tag": sem_tag,
-                                    "phase": phase_id,
-                                    "phase_hu": self.PHASE_NAMES_HU[phase_id],
-                                    "operation": sem_tag,
-                                    "right_of_way": row_id,
-                                    "right_of_way_hu": row_hu,
+                                    "tag": sem_tag, "phase": phase_id, "phase_hu": self.PHASE_NAMES_HU[phase_id],
+                                    "operation": sem_tag, "right_of_way": row_id, "right_of_way_hu": row_hu,
                                     "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
                                     "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
                                     "pedestrian_requests": get_req_states(),
                                     "pending_requests_set": list(pending_requests),
                                     "next_cycle_requests_set": list(next_cycle_requests),
-                                    "vehicles": v_snap,
-                                    "pedestrians": p_snap,
-                                    "remaining_time": sec,
-                                    "duration": duration,
-                                    "step_duration_ms": step_duration,
-                                    "cycle": c_idx,
-                                    "total_cycles": total_cycles,
+                                    "vehicles": v_snap, "pedestrians": p_snap,
+                                    "remaining_time": sec, "duration": duration,
+                                    "step_duration_ms": step_dur, "cycle": c_idx, "total_cycles": total_cycles,
                                     "step_index": step_counter,
                                 }
                             ))
+
+            # Gyalogos fázisok lefutása, ha van rájuk érvényes igény, vagy már benne vagyunk
+            if pending_requests or is_in_ped_phase_currently:
+                active_serviced = set(pending_requests) if pending_requests else set(["north", "south", "east", "west"])
+                pending_requests.difference_update(active_serviced)
+
+                ped_phases = get_cycle_ped_phases(active_serviced)
+                ped_phase_ids = [p[0] for p in ped_phases]
+
+                start_p_idx = 0
+                if is_in_ped_phase_currently and cur_phase in ped_phase_ids:
+                    start_p_idx = ped_phase_ids.index(cur_phase)
+
+                for p_idx in range(start_p_idx, len(ped_phases)):
+                    phase_id, ns_light, ew_light, ped_light_map, duration, row_id, row_hu, moving_veh_dirs, moving_ped_crossings, veh_is_green, ped_is_green = ped_phases[p_idx]
+                    cur_veh_lights = {"ns": dict(ns_light), "ew": dict(ew_light)}
+                    cur_ped_lights = {c: dict(l) for c, l in ped_light_map.items()}
+
+                    if is_in_ped_phase_currently and p_idx == start_p_idx and cur_phase == phase_id:
+                        if step_duration_ms == 0 and cur_rem_time >= 1:
+                            tick_events = self._generate_tick_events(
+                                cur_rem_time, duration, row_hu, vehicles, pedestrians,
+                                moving_veh_dirs, moving_ped_crossings,
+                                veh_is_green, ped_is_green, pending_requests
+                            )
+                            cur_ev_idx = -1
+                            for idx, (stag, _, _, _) in enumerate(tick_events):
+                                if stag == cur_tag:
+                                    cur_ev_idx = idx
+                                    break
+                            remaining_events = tick_events[cur_ev_idx + 1:] if cur_ev_idx >= 0 else []
+                            for ev_idx, (sem_tag, act_desc, v_snap, p_snap) in enumerate(remaining_events):
+                                step_counter += 1
+                                is_last_in_tick = (ev_idx == len(remaining_events) - 1)
+                                step_dur = 1000 if is_last_in_tick else 0
+                                w_v, w_p, passed_cnt = count_metrics(v_snap, p_snap)
+                                future_steps.append(VisualizationStep(
+                                    explanation=f"{act_desc} Hátralévő fázisidő: {cur_rem_time} mp.",
+                                    code_line=self.get_line_for_tag("Python", sem_tag),
+                                    metrics={"comparisons": step_counter, "pass_num": c_idx, "remaining_time": cur_rem_time, "cycle": c_idx},
+                                    array=[w_v, w_p, passed_cnt],
+                                    key=self.PHASE_NAMES_HU[phase_id],
+                                    extra={
+                                        "tag": sem_tag, "phase": phase_id, "phase_hu": self.PHASE_NAMES_HU[phase_id],
+                                        "operation": sem_tag, "right_of_way": row_id, "right_of_way_hu": row_hu,
+                                        "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
+                                        "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
+                                        "pedestrian_requests": get_req_states(),
+                                        "pending_requests_set": list(pending_requests),
+                                        "next_cycle_requests_set": list(next_cycle_requests),
+                                        "vehicles": v_snap, "pedestrians": p_snap,
+                                        "remaining_time": cur_rem_time, "duration": duration,
+                                        "step_duration_ms": step_dur, "cycle": c_idx, "total_cycles": total_cycles,
+                                        "step_index": step_counter,
+                                    }
+                                ))
+                        start_sec = cur_rem_time - 1
+                    else:
+                        start_sec = duration
+
+                    for sec in range(start_sec, 0, -1):
+                        tick_events = self._generate_tick_events(
+                            sec, duration, row_hu, vehicles, pedestrians,
+                            moving_veh_dirs, moving_ped_crossings,
+                            veh_is_green, ped_is_green, pending_requests
+                        )
+                        for ev_idx, (sem_tag, act_desc, v_snap, p_snap) in enumerate(tick_events):
+                            step_counter += 1
+                            is_last_in_tick = (ev_idx == len(tick_events) - 1)
+                            step_dur = 1000 if is_last_in_tick else 0
+                            w_v, w_p, passed_cnt = count_metrics(v_snap, p_snap)
+                            future_steps.append(VisualizationStep(
+                                explanation=f"{act_desc} Hátralévő fázisidő: {sec} mp.",
+                                code_line=self.get_line_for_tag("Python", sem_tag),
+                                metrics={"comparisons": step_counter, "pass_num": c_idx, "remaining_time": sec, "cycle": c_idx},
+                                array=[w_v, w_p, passed_cnt],
+                                key=self.PHASE_NAMES_HU[phase_id],
+                                extra={
+                                    "tag": sem_tag, "phase": phase_id, "phase_hu": self.PHASE_NAMES_HU[phase_id],
+                                    "operation": sem_tag, "right_of_way": row_id, "right_of_way_hu": row_hu,
+                                    "vehicle_lights": {k: dict(v) for k, v in cur_veh_lights.items()},
+                                    "pedestrian_lights": {k: dict(v) for k, v in cur_ped_lights.items()},
+                                    "pedestrian_requests": get_req_states(),
+                                    "pending_requests_set": list(pending_requests),
+                                    "next_cycle_requests_set": list(next_cycle_requests),
+                                    "vehicles": v_snap, "pedestrians": p_snap,
+                                    "remaining_time": sec, "duration": duration,
+                                    "step_duration_ms": step_dur, "cycle": c_idx, "total_cycles": total_cycles,
+                                    "step_index": step_counter,
+                                }
+                            ))
+
+            is_in_ped_phase_currently = False
 
         # COMPLETE LÉPÉS
         step_counter += 1

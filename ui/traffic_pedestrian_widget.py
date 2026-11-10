@@ -600,9 +600,10 @@ class TrafficPedestrianIntersectionViewerWidget(QFrame):
         """
         Kezeli az interaktív gombnyomást a vászonról vagy az információs panelről.
         A kérést közvetlenül az aktív szimulációhoz továbbítja.
+        A kérést és a motor jövőbeli lépéseinek újragenerálását hajtja végre ELŐSZÖR,
+        és kizárólag a szimuláció frissülése UTÁN bocsátja ki a request_made eseményt.
         """
         crossing = str(crossing).strip().lower()
-        self.request_made.emit(crossing)
         handled = False
         if self.plugin and hasattr(self.plugin, 'register_pedestrian_request'):
             handled = self.plugin.register_pedestrian_request(crossing, engine=self.engine)
@@ -617,6 +618,9 @@ class TrafficPedestrianIntersectionViewerWidget(QFrame):
 
         req_list = [c.upper() for c, req in cur_reqs.items() if req]
         self.ped_requests_label.setText(f"Hívógombok: {', '.join(req_list) if req_list else 'Nincs kérelem'}")
+
+        # A kérés regisztrálása és az engine lépések újragenerálása UTÁN értesítjük a MainWindow-t!
+        self.request_made.emit(crossing)
 
     def update_state(self, step):
         """Frissíti a felületi elemeket az átadott VisualizationStep alapján."""

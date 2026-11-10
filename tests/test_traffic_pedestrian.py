@@ -399,3 +399,82 @@ class TestTrafficPedestrianIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRealApplicationIntegration(unittest.TestCase):
+    """
+    Közvetlen alkalmazás-szintű integrációs tesztek a valós idejű
+    gombnyomási eseményfolyamat (Button -> Plugin -> Engine -> MainWindow) igazolására.
+    """
+
+    def setUp(self):
+        if HAS_QT:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+            self.app = QApplication.instance() or QApplication([])
+        else:
+            self.app = None
+
+    @unittest.skipUnless(HAS_QT, "PySide6 szükséges a MainWindow integrációs tesztekhez")
+    def test_complete_button_to_engine_to_mainwindow_event_path(self):
+        from ui.main_window import MainWindow
+
+        win = MainWindow()
+        win.show()
+        self.app.processEvents()
+
+        # Átváltunk a Phase 3 pluginra
+        p3 = win.plugin_loader.get_plugin("traffic_pedestrian_intersection")
+        self.assertIsNotNone(p3)
+        win.current_plugin = p3
+        win.update_active_visualizer()
+        win.reset()
+        self.app.processEvents()
+
+        # 1. Kezdeti állapot: nincs kérés, steps nem tartalmaz PED_WALK-ot
+        self.assertFalse(any(s.extra.get("phase") == "PED_WALK" for s in win.engine.steps))
+        initial_steps_ref = win.engine.steps
+
+        # 2. Elindítjuk a szimulációt és léptetünk néhányat jármű zöld fázisba
+        for _ in range(5):
+            win.next_step()
+            self.app.processEvents()
+
+        curr_idx = win.current_step_idx
+        self.assertEqual(curr_idx, 5)
+        self.assertEqual(win.engine.step_idx, 5)
+
+        # 3. Valós gombkattintás a vezérlőpanelen (pl. Észak gomb)
+        active_viewer = win.viz_stack.currentWidget()
+        self.assertIsInstance(active_viewer, TrafficPedestrianIntersectionViewerWidget)
+
+        # Kattintunk a valós QPushButton widgetre
+        active_viewer.btn_north.click()
+        self.app.processEvents()
+
+        # 4. Ellenőrizzük az event ordering és synchronization szabályokat:
+        # A plugin megkapta a kérést:
+        self.assertIn("north", p3.runtime_requests)
+
+        # Az Engine steps listája újragenerálódott a jövőre:
+        self.assertIsNot(win.engine.steps, initial_steps_ref)
+        self.assertIn("PED_WALK", [s.extra.get("phase") for s in win.engine.steps])
+
+        # A MainWindow steps referenciája szinkronban van az Engine-nel:
+        self.assertIs(win.steps, win.engine.steps)
+
+        # A végrehajtási pozíció nem ugrott el, a jelenlegi lépésindex változatlan:
+        self.assertEqual(win.current_step_idx, curr_idx)
+        self.assertEqual(win.engine.step_idx, curr_idx)
+
+        # A progress csúszka maximuma frissült az új jövőbeli lépések hosszára:
+        self.assertEqual(win.bottom_progress_slider.maximum(), len(win.steps) - 1)
+
+        # 5. Következő lépés végrehajtása az új jövőbeli sorozatból származik
+        next_step = win.engine.next_step()
+        win.show_step(next_step)
+        self.app.processEvents()
+        self.assertEqual(win.engine.step_idx, curr_idx + 1)
+        self.assertIn(next_step, win.steps)
+
+        win.close()
+        win.deleteLater()
