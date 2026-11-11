@@ -610,3 +610,131 @@ class TestPedestrianSchedulingAndLifecycle(unittest.TestCase):
         # A futásidejű kérések kiürültek, nincsenek maradvány kérések
         self.assertEqual(len(self.plugin.runtime_requests), 0)
         self.assertFalse(any(s.extra.get("phase") == "PED_WALK" for s in engine.steps))
+
+
+class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
+    """
+    Kifejezett regressziós tesztek a kiürítési fázisok alatt érkező kérelmekre (PED_CLEARANCE,
+    CLEARANCE_3), valamint a perzisztens kérelemállapot és a jövőbeli lépések összhangjára.
+    """
+
+    def setUp(self):
+        self.plugin = TrafficPedestrianIntersectionPlugin()
+        self.plugin.runtime_requests.clear()
+        self.plugin.runtime_next_cycle_requests.clear()
+
+    def test_request_during_ped_clearance_queued_for_next_cycle(self):
+        """
+        PED_CLEARANCE alatt érkező kérelem:
+        - A kérelem a következő ciklusra kerül (next_cycle_requests).
+        - Nem módosítja a már lefutott gyalogos zöld fázist.
+        - Nem vezet be gyalogos zöldet a kiürítés alatt (minden gyalogoslámpa PIROS marad).
+        - A kérelem a következő ciklusban zöldet kap, és pontosan egyszer fut le.
+        """
+        self.plugin.set_param("pedestrian_requests", "north")
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        # Eljutunk PED_CLEARANCE fázisba (ahol Észak már megkapta a zöldjét)
+        while engine.steps[engine.step_idx].extra.get("phase") != "PED_CLEARANCE":
+            engine.next_step()
+
+        curr_idx = engine.step_idx
+        curr_step = engine.steps[curr_idx]
+        self.assertEqual(curr_step.extra["phase"], "PED_CLEARANCE")
+
+        # PED_CLEARANCE alatt minden gyalogos jelzésnek pirosnak kell lennie
+        for c in ["north", "south", "east", "west"]:
+            self.assertFalse(curr_step.extra["pedestrian_lights"][c]["green"])
+
+        # Kérelem érkezik Nyugatra (különbözik a korábban kiszolgált Északtól)
+        self.plugin.register_pedestrian_request("west", engine=engine)
+
+        # 1. A kérelem a következő ciklusra került
+        self.assertIn("west", self.plugin.runtime_next_cycle_requests)
+
+        # 2. A jelenlegi 1. ciklus hátralévő lépéseiben (beleértve a CLEARANCE_3-at) SEMMILYEN gyalogos zöld nem jelenhet meg!
+        rem_steps_c1 = [s for s in engine.steps[curr_idx:] if s.extra.get("cycle") == 1]
+        for s in rem_steps_c1:
+            p_lights = s.extra["pedestrian_lights"]
+            for c in ["north", "south", "east", "west"]:
+                self.assertFalse(
+                    p_lights[c]["green"],
+                    f"Pedestrian green appeared during clearance in cycle 1: {s.extra['phase']}"
+                )
+
+        # 3. A következő 2. ciklusban Nyugat megkapja a zöldet
+        c2_walk = [s for s in engine.steps[curr_idx:] if s.extra.get("cycle") == 2 and s.extra.get("phase") == "PED_WALK"]
+        self.assertGreater(len(c2_walk), 0, "Cycle 2 must schedule PED_WALK for west!")
+        for s in c2_walk:
+            p_lights = s.extra["pedestrian_lights"]
+            self.assertTrue(p_lights["west"]["green"], "West must receive green in cycle 2!")
+            self.assertFalse(p_lights["north"]["green"], "North was already served in cycle 1, must not reappear!")
+
+    def test_request_during_clearance_3_queued_for_next_cycle(self):
+        """
+        CLEARANCE_3 alatt érkező kérelem:
+        - A kérelem a következő ciklusra kerül.
+        - Nem vezet be gyalogos zöldet a kiürítés alatt (minden jelzés PIROS).
+        - A kérelem a következő ciklusban zöldet kap, és pontosan egyszer fut le.
+        """
+        self.plugin.set_param("pedestrian_requests", "south")
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        while engine.steps[engine.step_idx].extra.get("phase") != "CLEARANCE_3":
+            engine.next_step()
+
+        curr_idx = engine.step_idx
+        curr_step = engine.steps[curr_idx]
+        self.assertEqual(curr_step.extra["phase"], "CLEARANCE_3")
+
+        # Kérelem érkezik Keletre
+        self.plugin.register_pedestrian_request("east", engine=engine)
+        self.assertIn("east", self.plugin.runtime_next_cycle_requests)
+
+        # A jelenlegi CLEARANCE_3 alatt tilos bármilyen zöld fény
+        rem_c1 = [s for s in engine.steps[curr_idx:] if s.extra.get("cycle") == 1]
+        for s in rem_c1:
+            for c in ["north", "south", "east", "west"]:
+                self.assertFalse(s.extra["pedestrian_lights"][c]["green"])
+
+        # A 2. ciklusban Kelet zöldet kap
+        c2_walk = [s for s in engine.steps[curr_idx:] if s.extra.get("cycle") == 2 and s.extra.get("phase") == "PED_WALK"]
+        self.assertGreater(len(c2_walk), 0)
+        for s in c2_walk:
+            self.assertTrue(s.extra["pedestrian_lights"]["east"]["green"])
+            self.assertFalse(s.extra["pedestrian_lights"]["south"]["green"])
+
+    def test_persistent_state_and_future_steps_consistency_after_service(self):
+        """
+        Igazolja, hogy a kiszolgált kérelem kikerül a perzisztens runtime állapotból,
+        és egy későbbi újragenerálás vagy regisztráció során nem jelenik meg újra.
+        """
+        self.plugin.set_param("pedestrian_requests", "north")
+        engine = Engine()
+        engine.set_plugin(self.plugin)
+        engine.generate_steps()
+
+        # Kezdetben Észak benne van a perzisztens runtime_requests-ben
+        self.assertIn("north", self.plugin.runtime_requests)
+
+        # Végrehajtjuk a lépéseket a PED_WALK-on keresztül
+        while not (engine.steps[engine.step_idx].extra.get("cycle") == 2 and engine.steps[engine.step_idx].extra.get("phase") == "NS_GREEN"):
+            s = engine.next_step()
+            self.plugin.sync_from_executed_step(s)
+
+        # A kiszolgálás után a perzisztens runtime_requests-ből Észak törlődött
+        self.assertNotIn("north", self.plugin.runtime_requests)
+
+        # Regisztrálunk egy új kérelmet Délre
+        self.plugin.register_pedestrian_request("south", engine=engine)
+
+        # A 2. ciklus gyalogos fázisában KIZÁRÓLAG Dél jelenik meg, Észak nem éled újra!
+        c2_walk = [s for s in engine.steps[engine.step_idx:] if s.extra.get("cycle") == 2 and s.extra.get("phase") == "PED_WALK"]
+        self.assertGreater(len(c2_walk), 0)
+        for s in c2_walk:
+            self.assertTrue(s.extra["pedestrian_lights"]["south"]["green"])
+            self.assertFalse(s.extra["pedestrian_lights"]["north"]["green"])

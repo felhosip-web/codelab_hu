@@ -1160,6 +1160,20 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
             print(f"[TrafficPedestrianIntersectionPlugin] create_visualizer error: {e}")
             return None
 
+    def sync_from_executed_step(self, step: VisualizationStep):
+        """
+        Szinkronizálja a plugin perzisztens futásidejű kérelemállapotát (runtime_requests,
+        runtime_next_cycle_requests) a ténylegesen végrehajtott VisualizationStep pillanatképpel.
+        Ez garantálja, hogy a kiszolgált kérelmek azonnal törlődnek a perzisztens állapotból,
+        és egy későbbi kérelemregisztráció vagy újragenerálás nem élesztheti újra azokat.
+        """
+        if step and hasattr(step, 'extra') and isinstance(step.extra, dict):
+            extra = step.extra
+            if 'pending_requests_set' in extra:
+                self.runtime_requests = set(extra['pending_requests_set'])
+            if 'next_cycle_requests_set' in extra:
+                self.runtime_next_cycle_requests = set(extra['next_cycle_requests_set'])
+
     def register_pedestrian_request(self, crossing: str, engine=None) -> bool:
         """
         Valós idejű gyalogos hívógomb kérelem regisztrálása a futó szimulációhoz.
@@ -1275,12 +1289,6 @@ class TrafficPedestrianIntersectionPlugin(AlgorithmPluginBase):
         self.runtime_requests = set(pending_requests)
         self.runtime_next_cycle_requests = set()
         next_cycle_requests: Set[str] = set()
-        for token in raw_reqs.split(","):
-            cleaned = token.strip().lower()
-            if cleaned in {"north", "south", "east", "west"}:
-                pending_requests.add(cleaned)
-
-        next_cycle_requests: Set[str] = set(self.runtime_next_cycle_requests)
 
         def get_req_states():
             return {c: (c in pending_requests or c in next_cycle_requests) for c in ["north", "south", "east", "west"]}

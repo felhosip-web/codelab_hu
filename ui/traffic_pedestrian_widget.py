@@ -624,6 +624,9 @@ class TrafficPedestrianIntersectionViewerWidget(QFrame):
 
     def update_state(self, step):
         """Frissíti a felületi elemeket az átadott VisualizationStep alapján."""
+        if self.plugin and hasattr(self.plugin, 'sync_from_executed_step'):
+            self.plugin.sync_from_executed_step(step)
+
         extra = getattr(step, 'extra', {}) or {}
         v_lights = extra.get("vehicle_lights") or {}
         p_lights = extra.get("pedestrian_lights") or {}
