@@ -269,6 +269,15 @@ class Engine:
             self.step_idx -= 1
             return self.steps[self.step_idx]
         return None
+
+    def register_pedestrian_request(self, crossing: str) -> bool:
+        """
+        Gyalogos hívógomb igény továbbítása az aktív szimulációhoz.
+        Ha az aktív plugin támogatja, frissíti az igényt és a lépéseket.
+        """
+        if self.current_plugin and hasattr(self.current_plugin, "register_pedestrian_request"):
+            return self.current_plugin.register_pedestrian_request(crossing, engine=self)
+        return False
     def get_current_state(self) -> AppState:
         params = {}
         if self.current_plugin and hasattr(self.current_plugin, 'get_params'):
