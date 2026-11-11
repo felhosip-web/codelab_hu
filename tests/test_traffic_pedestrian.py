@@ -28,6 +28,14 @@ try:
 except ImportError:
     HAS_QT = False
 
+def _init_qt_app():
+    if HAS_QT:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        return QApplication.instance() or QApplication([])
+    return None
+
+_QT_APP = _init_qt_app()
+
 
 class TestTrafficPedestrianPlugin(unittest.TestCase):
     """Belső logika, közlekedésbiztonsági invariánsok és állapotgép tesztek."""
@@ -612,6 +620,28 @@ class TestPedestrianSchedulingAndLifecycle(unittest.TestCase):
         self.assertFalse(any(s.extra.get("phase") == "PED_WALK" for s in engine.steps))
 
 
+def count_contiguous_ped_walk_occurrences(steps, crossing: str):
+    """
+    Kifejezetten megszámolja az önálló, folytonos PED_WALK fázis-előfordulások számát,
+    ahol az adott átkelő zöld jelzést kapott, elkerülve a fázison belüli rész-lépések
+    többszörös számolását.
+    """
+    occurrences = 0
+    in_active_walk = False
+    cycles = []
+    for s in steps:
+        phase = s.extra.get("phase")
+        is_green = s.extra.get("pedestrian_lights", {}).get(crossing, {}).get("green", False)
+        if phase == "PED_WALK" and is_green:
+            if not in_active_walk:
+                occurrences += 1
+                in_active_walk = True
+                cycles.append(s.extra.get("cycle"))
+        else:
+            in_active_walk = False
+    return occurrences, cycles
+
+
 class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
     """
     Kifejezett regressziós tesztek a kiürítési fázisok alatt érkező kérelmekre (PED_CLEARANCE,
@@ -622,6 +652,11 @@ class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
         self.plugin = TrafficPedestrianIntersectionPlugin()
         self.plugin.runtime_requests.clear()
         self.plugin.runtime_next_cycle_requests.clear()
+        if HAS_QT:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+            self.app = QApplication.instance() or QApplication([])
+        else:
+            self.app = None
 
     def test_request_during_ped_clearance_queued_for_next_cycle(self):
         """
@@ -629,7 +664,8 @@ class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
         - A kérelem a következő ciklusra kerül (next_cycle_requests).
         - Nem módosítja a már lefutott gyalogos zöld fázist.
         - Nem vezet be gyalogos zöldet a kiürítés alatt (minden gyalogoslámpa PIROS marad).
-        - A kérelem a következő ciklusban zöldet kap, és pontosan egyszer fut le.
+        - A kérelem a következő ciklusban zöldet kap, és a teljes generált idővonalon
+          PONTOSAN EGYETLEN önálló PED_WALK fázis-előfordulásban szolgálódik ki.
         """
         self.plugin.set_param("pedestrian_requests", "north")
         engine = Engine()
@@ -664,39 +700,25 @@ class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
                     f"Pedestrian green appeared during clearance in cycle 1: {s.extra['phase']}"
                 )
 
-        # 3. A következő 2. ciklusban Nyugat megkapja a zöldet
-        c2_walk = [s for s in engine.steps[curr_idx:] if s.extra.get("cycle") == 2 and s.extra.get("phase") == "PED_WALK"]
-        self.assertGreater(len(c2_walk), 0, "Cycle 2 must schedule PED_WALK for west!")
-        for s in c2_walk:
-            p_lights = s.extra["pedestrian_lights"]
-            self.assertTrue(p_lights["west"]["green"], "West must receive green in cycle 2!")
-            self.assertFalse(p_lights["north"]["green"], "North was already served in cycle 1, must not reappear!")
+        # 3. Kifejezett "pontosan egyszer kiszolgálva" vizsgálat folytonos fázis-előfordulások számlálásával:
+        west_occ_count, west_cycles = count_contiguous_ped_walk_occurrences(engine.steps, "west")
+        north_occ_count, north_cycles = count_contiguous_ped_walk_occurrences(engine.steps, "north")
 
-        # 4. Kifejezett "pontosan egyszer kiszolgálva" vizsgálat a teljes generált idővonalon:
-        # Összeszámoljuk azon ciklusok halmazát, ahol az adott átkelő zöld jelzést kapott PED_WALK alatt:
-        west_served_cycles = {
-            s.extra.get("cycle") for s in engine.steps
-            if s.extra.get("phase") == "PED_WALK" and s.extra.get("pedestrian_lights", {}).get("west", {}).get("green")
-        }
-        north_served_cycles = {
-            s.extra.get("cycle") for s in engine.steps
-            if s.extra.get("phase") == "PED_WALK" and s.extra.get("pedestrian_lights", {}).get("north", {}).get("green")
-        }
+        # West: Nem az 1. ciklusban futott le, a 2. ciklusban futott le, és PONTOSAN 1 fázis-előfordulásban:
+        self.assertNotIn(1, west_cycles, "West must not be served in current cycle 1!")
+        self.assertIn(2, west_cycles, "West must be served in next eligible cycle 2!")
+        self.assertEqual(west_occ_count, 1, f"West must be served in exactly ONE pedestrian walk phase! Got: {west_occ_count}")
 
-        # West: Nem az 1. ciklusban futott le, a 2. ciklusban lefutott, és a teljes idővonalon PONTOSAN EGYSZER:
-        self.assertNotIn(1, west_served_cycles, "West must not be served in current cycle 1!")
-        self.assertIn(2, west_served_cycles, "West must be served in next eligible cycle 2!")
-        self.assertEqual(len(west_served_cycles), 1, f"West must be served exactly once across all cycles! Got: {west_served_cycles}")
-
-        # North: Csak az 1. ciklusban kapott zöldet, a 2. vagy későbbi ciklusokban NEM éledhet újra:
-        self.assertEqual(north_served_cycles, {1}, f"North must only be served in cycle 1! Got: {north_served_cycles}")
+        # North: Csak az 1. ciklusban futott le (1 fázis-előfordulás), és a korábban kiszolgált átkelő SOHA nem éledhet újra:
+        self.assertEqual(north_cycles, [1], f"North must only be served in cycle 1! Got: {north_cycles}")
+        self.assertEqual(north_occ_count, 1, f"North must have exactly ONE occurrence! Got: {north_occ_count}")
 
     def test_request_during_clearance_3_queued_for_next_cycle(self):
         """
         CLEARANCE_3 alatt érkező kérelem:
         - A kérelem a következő ciklusra kerül.
         - Nem vezet be gyalogos zöldet a kiürítés alatt (minden jelzés PIROS).
-        - A kérelem a következő ciklusban zöldet kap, és pontosan egyszer fut le a teljes idővonalon.
+        - A kérelem a következő ciklusban zöldet kap, és pontosan egyetlen önálló PED_WALK fázisban fut le.
         """
         self.plugin.set_param("pedestrian_requests", "south")
         engine = Engine()
@@ -720,27 +742,15 @@ class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
             for c in ["north", "south", "east", "west"]:
                 self.assertFalse(s.extra["pedestrian_lights"][c]["green"])
 
-        # A 2. ciklusban Kelet zöldet kap
-        c2_walk = [s for s in engine.steps[curr_idx:] if s.extra.get("cycle") == 2 and s.extra.get("phase") == "PED_WALK"]
-        self.assertGreater(len(c2_walk), 0)
-        for s in c2_walk:
-            self.assertTrue(s.extra["pedestrian_lights"]["east"]["green"])
-            self.assertFalse(s.extra["pedestrian_lights"]["south"]["green"])
+        # Kifejezett "pontosan egyszer kiszolgálva" vizsgálat folytonos fázis-előfordulások számlálásával:
+        east_occ_count, east_cycles = count_contiguous_ped_walk_occurrences(engine.steps, "east")
+        south_occ_count, south_cycles = count_contiguous_ped_walk_occurrences(engine.steps, "south")
 
-        # Kifejezett "pontosan egyszer kiszolgálva" vizsgálat a teljes generált idővonalon:
-        east_served_cycles = {
-            s.extra.get("cycle") for s in engine.steps
-            if s.extra.get("phase") == "PED_WALK" and s.extra.get("pedestrian_lights", {}).get("east", {}).get("green")
-        }
-        south_served_cycles = {
-            s.extra.get("cycle") for s in engine.steps
-            if s.extra.get("phase") == "PED_WALK" and s.extra.get("pedestrian_lights", {}).get("south", {}).get("green")
-        }
-
-        self.assertNotIn(1, east_served_cycles, "East must not be served in current cycle 1!")
-        self.assertIn(2, east_served_cycles, "East must be served in next eligible cycle 2!")
-        self.assertEqual(len(east_served_cycles), 1, f"East must be served exactly once across all cycles! Got: {east_served_cycles}")
-        self.assertEqual(south_served_cycles, {1}, f"South must only be served in cycle 1! Got: {south_served_cycles}")
+        self.assertNotIn(1, east_cycles, "East must not be served in current cycle 1!")
+        self.assertIn(2, east_cycles, "East must be served in next eligible cycle 2!")
+        self.assertEqual(east_occ_count, 1, f"East must be served in exactly ONE pedestrian walk phase! Got: {east_occ_count}")
+        self.assertEqual(south_cycles, [1], f"South must only be served in cycle 1! Got: {south_cycles}")
+        self.assertEqual(south_occ_count, 1, f"South must have exactly ONE occurrence! Got: {south_occ_count}")
 
     def test_persistent_state_and_future_steps_consistency_after_service(self):
         """
@@ -773,6 +783,84 @@ class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
             self.assertTrue(s.extra["pedestrian_lights"]["south"]["green"])
             self.assertFalse(s.extra["pedestrian_lights"]["north"]["green"])
 
+
+class TestRealApplicationIntegration(unittest.TestCase):
+    """
+    Közvetlen alkalmazás-szintű integrációs tesztek a valós idejű
+    gombnyomási eseményfolyamat (Button -> Plugin -> Engine -> MainWindow) igazolására.
+    """
+
+    def setUp(self):
+        if HAS_QT:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+            self.app = QApplication.instance() or QApplication([])
+        else:
+            self.app = None
+
+    @unittest.skipUnless(HAS_QT, "PySide6 szükséges a MainWindow integrációs tesztekhez")
+    def test_complete_button_to_engine_to_mainwindow_event_path(self):
+        from ui.main_window import MainWindow
+
+        win = MainWindow()
+        win.show()
+        self.app.processEvents()
+
+        # Átváltunk a Phase 3 pluginra
+        p3 = win.plugin_loader.get_plugin("traffic_pedestrian_intersection")
+        self.assertIsNotNone(p3)
+        win.current_plugin = p3
+        win.update_active_visualizer()
+        win.reset()
+        self.app.processEvents()
+
+        # 1. Kezdeti állapot: nincs kérés, steps nem tartalmaz PED_WALK-ot
+        self.assertFalse(any(s.extra.get("phase") == "PED_WALK" for s in win.engine.steps))
+        initial_steps_ref = win.engine.steps
+
+        # 2. Elindítjuk a szimulációt és léptetünk néhányat jármű zöld fázisba
+        for _ in range(5):
+            win.next_step()
+            self.app.processEvents()
+
+        curr_idx = win.current_step_idx
+        self.assertEqual(curr_idx, 5)
+        self.assertEqual(win.engine.step_idx, 5)
+
+        # 3. Valós gombkattintás a vezérlőpanelen (pl. Észak gomb)
+        active_viewer = win.viz_stack.currentWidget()
+        self.assertIsInstance(active_viewer, TrafficPedestrianIntersectionViewerWidget)
+
+        # Kattintunk a valós QPushButton widgetre
+        active_viewer.btn_north.click()
+        self.app.processEvents()
+
+        # 4. Ellenőrizzük az event ordering és synchronization szabályokat:
+        # A plugin megkapta a kérést:
+        self.assertIn("north", p3.runtime_requests)
+
+        # Az Engine steps listája újragenerálódott a jövőre:
+        self.assertIsNot(win.engine.steps, initial_steps_ref)
+        self.assertIn("PED_WALK", [s.extra.get("phase") for s in win.engine.steps])
+
+        # A MainWindow steps referenciája szinkronban van az Engine-nel:
+        self.assertIs(win.steps, win.engine.steps)
+
+        # A végrehajtási pozíció nem ugrott el, a jelenlegi lépésindex változatlan:
+        self.assertEqual(win.current_step_idx, curr_idx)
+        self.assertEqual(win.engine.step_idx, curr_idx)
+
+        # A progress csúszka maximuma frissült az új jövőbeli lépések hosszára:
+        self.assertEqual(win.bottom_progress_slider.maximum(), len(win.steps) - 1)
+
+        # 5. Következő lépés végrehajtása az új jövőbeli sorozatból származik
+        next_step = win.engine.next_step()
+        win.show_step(next_step)
+        self.app.processEvents()
+        self.assertEqual(win.engine.step_idx, curr_idx + 1)
+        self.assertIn(next_step, win.steps)
+
+        win.close()
+        win.deleteLater()
 
     @unittest.skipUnless(HAS_QT, "PySide6 required for full application integration test")
     def test_real_execution_synchronization_path_via_widget_update_state(self):
