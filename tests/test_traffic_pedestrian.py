@@ -672,12 +672,31 @@ class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
             self.assertTrue(p_lights["west"]["green"], "West must receive green in cycle 2!")
             self.assertFalse(p_lights["north"]["green"], "North was already served in cycle 1, must not reappear!")
 
+        # 4. Kifejezett "pontosan egyszer kiszolgálva" vizsgálat a teljes generált idővonalon:
+        # Összeszámoljuk azon ciklusok halmazát, ahol az adott átkelő zöld jelzést kapott PED_WALK alatt:
+        west_served_cycles = {
+            s.extra.get("cycle") for s in engine.steps
+            if s.extra.get("phase") == "PED_WALK" and s.extra.get("pedestrian_lights", {}).get("west", {}).get("green")
+        }
+        north_served_cycles = {
+            s.extra.get("cycle") for s in engine.steps
+            if s.extra.get("phase") == "PED_WALK" and s.extra.get("pedestrian_lights", {}).get("north", {}).get("green")
+        }
+
+        # West: Nem az 1. ciklusban futott le, a 2. ciklusban lefutott, és a teljes idővonalon PONTOSAN EGYSZER:
+        self.assertNotIn(1, west_served_cycles, "West must not be served in current cycle 1!")
+        self.assertIn(2, west_served_cycles, "West must be served in next eligible cycle 2!")
+        self.assertEqual(len(west_served_cycles), 1, f"West must be served exactly once across all cycles! Got: {west_served_cycles}")
+
+        # North: Csak az 1. ciklusban kapott zöldet, a 2. vagy későbbi ciklusokban NEM éledhet újra:
+        self.assertEqual(north_served_cycles, {1}, f"North must only be served in cycle 1! Got: {north_served_cycles}")
+
     def test_request_during_clearance_3_queued_for_next_cycle(self):
         """
         CLEARANCE_3 alatt érkező kérelem:
         - A kérelem a következő ciklusra kerül.
         - Nem vezet be gyalogos zöldet a kiürítés alatt (minden jelzés PIROS).
-        - A kérelem a következő ciklusban zöldet kap, és pontosan egyszer fut le.
+        - A kérelem a következő ciklusban zöldet kap, és pontosan egyszer fut le a teljes idővonalon.
         """
         self.plugin.set_param("pedestrian_requests", "south")
         engine = Engine()
@@ -707,6 +726,21 @@ class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
         for s in c2_walk:
             self.assertTrue(s.extra["pedestrian_lights"]["east"]["green"])
             self.assertFalse(s.extra["pedestrian_lights"]["south"]["green"])
+
+        # Kifejezett "pontosan egyszer kiszolgálva" vizsgálat a teljes generált idővonalon:
+        east_served_cycles = {
+            s.extra.get("cycle") for s in engine.steps
+            if s.extra.get("phase") == "PED_WALK" and s.extra.get("pedestrian_lights", {}).get("east", {}).get("green")
+        }
+        south_served_cycles = {
+            s.extra.get("cycle") for s in engine.steps
+            if s.extra.get("phase") == "PED_WALK" and s.extra.get("pedestrian_lights", {}).get("south", {}).get("green")
+        }
+
+        self.assertNotIn(1, east_served_cycles, "East must not be served in current cycle 1!")
+        self.assertIn(2, east_served_cycles, "East must be served in next eligible cycle 2!")
+        self.assertEqual(len(east_served_cycles), 1, f"East must be served exactly once across all cycles! Got: {east_served_cycles}")
+        self.assertEqual(south_served_cycles, {1}, f"South must only be served in cycle 1! Got: {south_served_cycles}")
 
     def test_persistent_state_and_future_steps_consistency_after_service(self):
         """
@@ -738,3 +772,60 @@ class TestClearancePhaseAndPersistentConsistency(unittest.TestCase):
         for s in c2_walk:
             self.assertTrue(s.extra["pedestrian_lights"]["south"]["green"])
             self.assertFalse(s.extra["pedestrian_lights"]["north"]["green"])
+
+
+    @unittest.skipUnless(HAS_QT, "PySide6 required for full application integration test")
+    def test_real_execution_synchronization_path_via_widget_update_state(self):
+        """
+        2. Feladat: Valós alkalmazási végrehajtási szinkronizáció vizsgálata.
+        Igazolja, hogy a MainWindow.next_step() -> show_step() -> widget.update_state()
+        útvonal automatikusan szinkronizálja a plugin perzisztens runtime_requests állapotát,
+        így a kiszolgált kérelem természetesen törlődik anélkül, hogy a teszt közvetlenül
+        meghívná a sync_from_executed_step() metódust.
+        Ezt követően egy újabb gombnyomás és újragenerálás nem élesztheti újra a korábban
+        már kiszolgált átkelőt!
+        """
+        from ui.main_window import MainWindow
+
+        win = MainWindow()
+        win.show()
+        self.app.processEvents()
+
+        p3 = win.plugin_loader.get_plugin("traffic_pedestrian_intersection")
+        p3.runtime_requests.clear()
+        p3.runtime_next_cycle_requests.clear()
+        p3.set_param("pedestrian_requests", "north")
+
+        win.current_plugin = p3
+        win.update_active_visualizer()
+        win.reset()
+        self.app.processEvents()
+
+        # Kezdetben 'north' benne van a perzisztens runtime_requests-ben
+        self.assertIn("north", p3.runtime_requests)
+
+        # Lépkedünk a normál win.next_step() alkalmazási felületi útvonalon
+        # keresztül a PED_WALK-on át egészen a 2. ciklus elejéig
+        while not (win.engine.steps[win.engine.step_idx].extra.get("cycle") == 2 and win.engine.steps[win.engine.step_idx].extra.get("phase") == "NS_GREEN"):
+            win.next_step()
+            self.app.processEvents()
+
+        # A kiszolgálás után a plugin perzisztens runtime_requests állapota a widget.update_state()
+        # láncon keresztül automatikusan kiürült 'north'-ból!
+        self.assertNotIn("north", p3.runtime_requests, "North must be removed from persistent state through widget update_state!")
+
+        # Most rákattintunk egy ÚJ átkelő gombjára (Dél) a valós UI gombon keresztül
+        active_viewer = win.viz_stack.currentWidget()
+        self.assertIsInstance(active_viewer, TrafficPedestrianIntersectionViewerWidget)
+        active_viewer.btn_south.click()
+        self.app.processEvents()
+
+        # Ellenőrizzük, hogy a jövőbeli lépésekben 'north' SOHA nem jelenik meg újra:
+        future_walk = [s for s in win.steps[win.current_step_idx:] if s.extra.get("cycle") == 2 and s.extra.get("phase") == "PED_WALK"]
+        self.assertGreater(len(future_walk), 0)
+        for s in future_walk:
+            self.assertTrue(s.extra["pedestrian_lights"]["south"]["green"], "South must receive green in cycle 2!")
+            self.assertFalse(s.extra["pedestrian_lights"]["north"]["green"], "North must not be resurrected!")
+
+        win.close()
+        win.deleteLater()
